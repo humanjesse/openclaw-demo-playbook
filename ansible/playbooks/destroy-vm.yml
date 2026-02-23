@@ -3,7 +3,6 @@
   hosts: localhost
   connection: local
   gather_facts: false
-  become: true
 
   vars_files:
     - ../vars/defaults.yml
@@ -12,6 +11,7 @@
     # Expected via --extra-vars: vm_name
     cloud_init_iso: "/tmp/cloud-init-{{ vm_name }}.iso"
     cloud_init_dir: "/tmp/cloud-init-{{ vm_name }}"
+    libvirt_uri: "qemu:///system"
 
   tasks:
     - name: Validate required variables
@@ -22,13 +22,13 @@
 
     - name: Destroy VM (force off)
       ansible.builtin.command:
-        cmd: virsh destroy {{ vm_name }}
+        cmd: virsh -c {{ libvirt_uri }} destroy {{ vm_name }}
       ignore_errors: true
       register: destroy_result
 
     - name: Undefine VM and remove storage
       ansible.builtin.command:
-        cmd: virsh undefine {{ vm_name }} --remove-all-storage
+        cmd: virsh -c {{ libvirt_uri }} undefine {{ vm_name }} --remove-all-storage
       ignore_errors: true
 
     - name: Remove cloud-init ISO
@@ -43,7 +43,7 @@
 
     - name: Remove VM disk (if undefine didn't catch it)
       ansible.builtin.command:
-        cmd: virsh vol-delete {{ vm_name }}.qcow2 --pool {{ vm_storage_pool }}
+        cmd: virsh -c {{ libvirt_uri }} vol-delete {{ vm_name }}.qcow2 --pool {{ vm_storage_pool }}
       ignore_errors: true
 
     - name: Report

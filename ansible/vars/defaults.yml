@@ -17,6 +17,6 @@ ollama_host: 192.168.122.1
 ollama_port: 11434
 ollama_model: "qwen3:8b"
 
-# SSH key to inject into VMs (use absolute path since playbook runs with become: true)
-ssh_public_key_file: "{{ lookup('env', 'HOME') }}/.ssh/openclaw_demo.pub"
-ssh_private_key_file: "{{ lookup('env', 'HOME') }}/.ssh/openclaw_demo"
+# SSH key to inject into VMs
+ssh_public_key_file: ~/.ssh/openclaw_demo.pub
+ssh_private_key_file: ~/.ssh/openclaw_demo

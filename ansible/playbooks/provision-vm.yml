@@ -3,7 +3,6 @@
   hosts: localhost
   connection: local
   gather_facts: false
-  become: true
 
   vars_files:
     - ../vars/defaults.yml
@@ -14,6 +13,7 @@
     vm_disk_path: "{{ vm_disk_dir }}/{{ vm_name }}.qcow2"
     cloud_init_dir: "/tmp/cloud-init-{{ vm_name }}"
     cloud_init_iso: "/tmp/cloud-init-{{ vm_name }}.iso"
+    libvirt_uri: "qemu:///system"
 
   tasks:
     # --- Validate inputs ---
@@ -74,10 +74,10 @@
       args:
         creates: "{{ cloud_init_iso }}"
 
-    # --- Create VM disk via libvirt storage pool (no sudo needed) ---
+    # --- Create VM disk via libvirt storage pool ---
     - name: Check if VM disk already exists
       ansible.builtin.command:
-        cmd: virsh vol-info {{ vm_name }}.qcow2 --pool {{ vm_storage_pool }}
+        cmd: virsh -c {{ libvirt_uri }} vol-info {{ vm_name }}.qcow2 --pool {{ vm_storage_pool }}
       register: vol_check
       ignore_errors: true
       changed_when: false
@@ -85,7 +85,7 @@
     - name: Create VM disk from cloud image (backing file)
       ansible.builtin.command:
         cmd: >
-          virsh vol-create-as {{ vm_storage_pool }}
+          virsh -c {{ libvirt_uri }} vol-create-as {{ vm_storage_pool }}
           {{ vm_name }}.qcow2 {{ vm_disk_size }}
           --format qcow2
           --backing-vol {{ cloud_image_path }}
@@ -97,6 +97,7 @@
       ansible.builtin.command:
         cmd: >
           virt-install
+          --connect {{ libvirt_uri }}
           --name {{ vm_name }}
           --ram {{ vm_ram_mb }}
           --vcpus {{ vm_vcpus }}
@@ -112,7 +113,7 @@
     # --- Wait for VM to get IP ---
     - name: Get VM MAC address
       ansible.builtin.shell: |
-        virsh domiflist {{ vm_name }} | grep -oP '([0-9a-f]{2}:){5}[0-9a-f]{2}'
+        virsh -c {{ libvirt_uri }} domiflist {{ vm_name }} | grep -oP '([0-9a-f]{2}:){5}[0-9a-f]{2}'
       register: vm_mac_result
       changed_when: false
 
@@ -124,7 +125,7 @@
       ansible.builtin.shell: |
         for i in $(seq 1 90); do
           # Match DHCP lease by MAC address (unique per VM instance, immune to stale leases)
-          IP=$(virsh net-dhcp-leases {{ vm_network }} 2>/dev/null \
+          IP=$(virsh -c {{ libvirt_uri }} net-dhcp-leases {{ vm_network }} 2>/dev/null \
                | grep '{{ vm_mac }}' | grep -oP '192\.168\.122\.\d+' | head -1)
           if [ -n "$IP" ]; then
             echo "$IP"
