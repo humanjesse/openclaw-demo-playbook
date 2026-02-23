@@ -121,13 +121,20 @@ else
     echo "  Ollama installed."
 fi
 
-# Configure Ollama to listen on all interfaces (so VMs can reach it via virbr0)
-echo "  Configuring Ollama to bind 0.0.0.0:11434..."
+# Enable GPU persistence mode (keeps NVIDIA driver loaded, eliminates cold-start latency)
+echo "  Enabling GPU persistence mode..."
+if nvidia-smi &>/dev/null; then
+    sudo nvidia-smi -pm 1
+fi
+
+# Configure Ollama: bind all interfaces, flash attention, keep model in VRAM
+echo "  Configuring Ollama..."
 sudo mkdir -p /etc/systemd/system/ollama.service.d
 sudo tee /etc/systemd/system/ollama.service.d/override.conf > /dev/null << 'EOF'
 [Service]
 Environment="OLLAMA_HOST=0.0.0.0:11434"
 Environment="OLLAMA_KEEP_ALIVE=1h"
+Environment="OLLAMA_FLASH_ATTENTION=1"
 EOF
 sudo systemctl daemon-reload
 sudo systemctl enable --now ollama.service
