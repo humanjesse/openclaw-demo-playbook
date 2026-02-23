@@ -142,11 +142,23 @@ for i in $(seq 1 30); do
     sleep 1
 done
 
-# Pull the default model
+# Read model from .env if available, otherwise default to qwen3:8b
 MODEL="qwen3:8b"
-echo "  Pulling model $MODEL (this may take a few minutes)..."
-ollama pull "$MODEL"
-echo "  Model $MODEL ready."
+if [ -f "$PROJECT_DIR/.env" ]; then
+    ENV_MODEL=$(grep -oP '^OLLAMA_MODEL=\K.*' "$PROJECT_DIR/.env" || true)
+    if [ -n "$ENV_MODEL" ]; then
+        MODEL="$ENV_MODEL"
+    fi
+fi
+
+# Pull model only if not already downloaded
+if ollama list 2>/dev/null | grep -q "^${MODEL}"; then
+    echo "  Model $MODEL already pulled."
+else
+    echo "  Pulling model $MODEL (this may take a few minutes)..."
+    ollama pull "$MODEL"
+    echo "  Model $MODEL ready."
+fi
 
 # Verify GPU detection
 echo ""
