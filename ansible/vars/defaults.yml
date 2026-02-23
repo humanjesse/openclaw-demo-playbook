@@ -1,5 +1,5 @@
-# Paths
-project_root: /home/wassie/Work/openclaw-provision
+# Paths (project_root derived from playbook location — works on any machine)
+project_root: "{{ playbook_dir | dirname | dirname }}"
 cloud_image_path: /var/lib/libvirt/images/ubuntu-24.04-cloudimg-amd64.img
 vm_disk_dir: /var/lib/libvirt/images
 vm_storage_pool: images-1

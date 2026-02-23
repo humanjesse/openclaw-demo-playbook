@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     cf_domain: str = "demo.example.com"
 
     # Ansible
-    ansible_playbook_dir: str = "/home/wassie/Work/openclaw-provision/ansible/playbooks"
+    ansible_playbook_dir: str = "./ansible/playbooks"
 
     # VM defaults
     vm_ram_mb: int = 4096
