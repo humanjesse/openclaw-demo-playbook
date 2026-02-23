@@ -1,0 +1,198 @@
+---
+- name: Provision OpenClaw VM
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/defaults.yml
+
+  vars:
+    # Expected via --extra-vars: vm_name, cf_tunnel_token, gateway_token
+    # Optional overrides: vm_ram_mb, vm_vcpus, ollama_model
+    vm_disk_path: "{{ vm_disk_dir }}/{{ vm_name }}.qcow2"
+    cloud_init_dir: "/tmp/cloud-init-{{ vm_name }}"
+    cloud_init_iso: "/tmp/cloud-init-{{ vm_name }}.iso"
+
+  tasks:
+    # --- Validate inputs ---
+    - name: Validate required variables
+      ansible.builtin.assert:
+        that:
+          - vm_name is defined
+          - cf_tunnel_token is defined
+          - gateway_token is defined
+        fail_msg: "Required variables: vm_name, cf_tunnel_token, gateway_token"
+
+    - name: Check cloud image exists
+      ansible.builtin.stat:
+        path: "{{ cloud_image_path }}"
+      register: cloud_image_stat
+
+    - name: Fail if cloud image missing
+      ansible.builtin.fail:
+        msg: "Cloud image not found at {{ cloud_image_path }}. Run scripts/download-cloud-image.sh first."
+      when: not cloud_image_stat.stat.exists
+
+    # --- Read SSH key ---
+    - name: Read SSH public key
+      ansible.builtin.slurp:
+        src: "{{ ssh_public_key_file }}"
+      register: ssh_key_raw
+
+    - name: Set SSH key fact
+      ansible.builtin.set_fact:
+        ssh_public_key: "{{ ssh_key_raw.content | b64decode | trim }}"
+
+    # --- Build cloud-init ISO ---
+    - name: Create cloud-init working directory
+      ansible.builtin.file:
+        path: "{{ cloud_init_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Render cloud-init user-data
+      ansible.builtin.template:
+        src: "{{ cloud_init_template_dir }}/user-data.yaml.j2"
+        dest: "{{ cloud_init_dir }}/user-data"
+        mode: "0644"
+
+    - name: Render cloud-init meta-data
+      ansible.builtin.template:
+        src: "{{ cloud_init_template_dir }}/meta-data.yaml.j2"
+        dest: "{{ cloud_init_dir }}/meta-data"
+        mode: "0644"
+
+    - name: Create cloud-init ISO
+      ansible.builtin.command:
+        cmd: >
+          mkisofs -output {{ cloud_init_iso }}
+          -volid cidata -joliet -rock
+          {{ cloud_init_dir }}/user-data
+          {{ cloud_init_dir }}/meta-data
+      args:
+        creates: "{{ cloud_init_iso }}"
+
+    # --- Create VM disk via libvirt storage pool (no sudo needed) ---
+    - name: Check if VM disk already exists
+      ansible.builtin.command:
+        cmd: virsh vol-info {{ vm_name }}.qcow2 --pool {{ vm_storage_pool }}
+      register: vol_check
+      ignore_errors: true
+      changed_when: false
+
+    - name: Create VM disk from cloud image (backing file)
+      ansible.builtin.command:
+        cmd: >
+          virsh vol-create-as {{ vm_storage_pool }}
+          {{ vm_name }}.qcow2 {{ vm_disk_size }}
+          --format qcow2
+          --backing-vol {{ cloud_image_path }}
+          --backing-vol-format qcow2
+      when: vol_check.rc != 0
+
+    # --- Launch VM ---
+    - name: Create and start VM
+      ansible.builtin.command:
+        cmd: >
+          virt-install
+          --name {{ vm_name }}
+          --ram {{ vm_ram_mb }}
+          --vcpus {{ vm_vcpus }}
+          --import
+          --disk path={{ vm_disk_path }},format=qcow2
+          --disk path={{ cloud_init_iso }},device=cdrom
+          --os-variant {{ vm_os_variant }}
+          --network network={{ vm_network }},model=virtio
+          --graphics none
+          --noautoconsole
+          --wait 0
+
+    # --- Wait for VM to get IP ---
+    - name: Get VM MAC address
+      ansible.builtin.shell: |
+        virsh domiflist {{ vm_name }} | grep -oP '([0-9a-f]{2}:){5}[0-9a-f]{2}'
+      register: vm_mac_result
+      changed_when: false
+
+    - name: Set VM MAC fact
+      ansible.builtin.set_fact:
+        vm_mac: "{{ vm_mac_result.stdout | trim }}"
+
+    - name: Wait for VM to get an IP address
+      ansible.builtin.shell: |
+        for i in $(seq 1 90); do
+          # Match DHCP lease by MAC address (unique per VM instance, immune to stale leases)
+          IP=$(virsh net-dhcp-leases {{ vm_network }} 2>/dev/null \
+               | grep '{{ vm_mac }}' | grep -oP '192\.168\.122\.\d+' | head -1)
+          if [ -n "$IP" ]; then
+            echo "$IP"
+            exit 0
+          fi
+          sleep 2
+        done
+        echo "TIMEOUT"
+        exit 1
+      register: vm_ip_result
+      changed_when: false
+
+    - name: Set VM IP fact
+      ansible.builtin.set_fact:
+        vm_ip: "{{ vm_ip_result.stdout | trim }}"
+
+    - name: Display VM IP
+      ansible.builtin.debug:
+        msg: "VM '{{ vm_name }}' got IP: {{ vm_ip }}"
+
+    # --- Wait for readiness ---
+    - name: Wait for SSH to become available
+      ansible.builtin.wait_for:
+        host: "{{ vm_ip }}"
+        port: 22
+        timeout: 300
+        delay: 5
+
+    - name: Wait for cloud-init to complete
+      ansible.builtin.command:
+        cmd: >
+          ssh -o StrictHostKeyChecking=no
+          -o UserKnownHostsFile=/dev/null
+          -o ConnectTimeout=10
+          -i {{ ssh_private_key_file }}
+          openclaw@{{ vm_ip }}
+          cloud-init status --wait
+      register: cloud_init_status
+      retries: 30
+      delay: 10
+      until: cloud_init_status.rc == 0
+      changed_when: false
+
+    - name: Verify OpenClaw readiness
+      ansible.builtin.command:
+        cmd: >
+          ssh -o StrictHostKeyChecking=no
+          -o UserKnownHostsFile=/dev/null
+          -i {{ ssh_private_key_file }}
+          openclaw@{{ vm_ip }}
+          test -f /var/run/openclaw-ready
+      register: openclaw_ready
+      retries: 30
+      delay: 10
+      until: openclaw_ready.rc == 0
+      changed_when: false
+
+    # --- Report ---
+    - name: Report success
+      ansible.builtin.debug:
+        msg: |
+          === VM Provisioned Successfully ===
+          VM Name:       {{ vm_name }}
+          VM IP:         {{ vm_ip }}
+          OpenClaw:      http://{{ vm_ip }}:18789
+          Cloud-init:    {{ cloud_init_status.stdout | default('done') }}
+
+    # --- Cleanup temp files ---
+    - name: Clean up temporary cloud-init directory
+      ansible.builtin.file:
+        path: "{{ cloud_init_dir }}"
+        state: absent

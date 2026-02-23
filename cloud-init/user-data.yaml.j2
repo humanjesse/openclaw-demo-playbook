@@ -1,0 +1,159 @@
+#cloud-config
+
+hostname: {{ vm_name }}
+manage_etc_hosts: true
+locale: en_US.UTF-8
+timezone: UTC
+
+users:
+  - name: openclaw
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    lock_passwd: true
+    ssh_authorized_keys:
+      - {{ ssh_public_key }}
+
+package_update: true
+package_upgrade: false
+
+packages:
+  - curl
+  - git
+  - build-essential
+  - jq
+  - qemu-guest-agent
+
+write_files:
+  - path: /home/openclaw/.openclaw/openclaw.json
+    owner: openclaw:openclaw
+    permissions: "0644"
+    defer: true
+    content: |
+      {
+        "models": {
+          "providers": {
+            "ollama": {
+              "baseUrl": "http://{{ ollama_host }}:{{ ollama_port }}",
+              "apiKey": "ollama-local",
+              "api": "ollama",
+              "models": [
+                {
+                  "id": "{{ ollama_model }}",
+                  "name": "{{ ollama_model }}",
+                  "reasoning": false,
+                  "input": ["text"],
+                  "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+                  "contextWindow": 8192,
+                  "maxTokens": 8192
+                }
+              ]
+            }
+          }
+        },
+        "agents": {
+          "defaults": {
+            "model": {
+              "primary": "ollama/{{ ollama_model }}"
+            }
+          }
+        },
+        "gateway": {
+          "port": 18789,
+          "bind": "lan",
+          "mode": "local",
+          "auth": {
+            "type": "token",
+            "token": "{{ gateway_token }}"
+          }
+        }
+      }
+
+  - path: /opt/setup-openclaw.sh
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      exec > /var/log/openclaw-setup.log 2>&1
+
+      echo "[$(date)] Starting OpenClaw setup..."
+
+      # Install Node.js 22 via NodeSource
+      echo "[$(date)] Installing Node.js 22..."
+      curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+      apt-get install -y nodejs
+      echo "[$(date)] Node.js $(node --version) installed."
+
+      # Install OpenClaw globally
+      echo "[$(date)] Installing OpenClaw..."
+      npm install -g openclaw@latest
+      echo "[$(date)] OpenClaw installed."
+
+      # Ensure config directory ownership
+      chown -R openclaw:openclaw /home/openclaw/.openclaw
+
+      # Fix any legacy config issues
+      echo "[$(date)] Running OpenClaw doctor..."
+      sudo -u openclaw openclaw doctor --fix 2>/dev/null || true
+
+      # Run onboard in non-interactive mode (config already written above)
+      echo "[$(date)] Running OpenClaw onboard..."
+      sudo -u openclaw openclaw onboard \
+        --non-interactive \
+        --accept-risk \
+        --install-daemon || {
+        echo "[$(date)] WARNING: onboard failed, attempting manual daemon install..."
+        sudo -u openclaw openclaw gateway install 2>/dev/null || true
+      }
+      echo "[$(date)] OpenClaw onboard complete."
+
+      # Start the gateway as a system-level service (cloud-init has no user session)
+      echo "[$(date)] Creating OpenClaw gateway systemd service..."
+      cat > /etc/systemd/system/openclaw-gateway.service << 'SVCEOF'
+      [Unit]
+      Description=OpenClaw Gateway
+      After=network.target
+
+      [Service]
+      Type=simple
+      User=openclaw
+      WorkingDirectory=/home/openclaw
+      ExecStart=/usr/bin/openclaw gateway run
+      Restart=on-failure
+      RestartSec=5
+      Environment=HOME=/home/openclaw
+
+      [Install]
+      WantedBy=multi-user.target
+      SVCEOF
+      systemctl daemon-reload
+      systemctl enable --now openclaw-gateway.service
+      echo "[$(date)] OpenClaw gateway service started."
+
+      # Wait briefly for gateway to bind
+      sleep 3
+      if curl -s -m 2 http://localhost:18789/ >/dev/null 2>&1; then
+        echo "[$(date)] Gateway is responding on port 18789."
+      else
+        echo "[$(date)] WARNING: Gateway not yet responding on 18789 (may still be starting)."
+      fi
+
+      # Install cloudflared
+      echo "[$(date)] Installing cloudflared..."
+      curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb \
+        -o /tmp/cloudflared.deb
+      dpkg -i /tmp/cloudflared.deb
+      rm -f /tmp/cloudflared.deb
+      echo "[$(date)] cloudflared installed."
+
+      # Install and start the cloudflare tunnel as a service
+      echo "[$(date)] Starting cloudflared tunnel..."
+      cloudflared service install "{{ cf_tunnel_token }}"
+      echo "[$(date)] cloudflared tunnel service installed and started."
+
+      # Signal readiness
+      echo "READY" > /var/run/openclaw-ready
+      echo "[$(date)] Setup complete. OpenClaw is ready."
+
+runcmd:
+  - systemctl enable --now qemu-guest-agent
+  - /opt/setup-openclaw.sh

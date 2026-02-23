@@ -1,0 +1,50 @@
+---
+- name: Destroy OpenClaw VM
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/defaults.yml
+
+  vars:
+    # Expected via --extra-vars: vm_name
+    cloud_init_iso: "/tmp/cloud-init-{{ vm_name }}.iso"
+    cloud_init_dir: "/tmp/cloud-init-{{ vm_name }}"
+
+  tasks:
+    - name: Validate required variables
+      ansible.builtin.assert:
+        that:
+          - vm_name is defined
+        fail_msg: "Required variable: vm_name"
+
+    - name: Destroy VM (force off)
+      ansible.builtin.command:
+        cmd: virsh destroy {{ vm_name }}
+      ignore_errors: true
+      register: destroy_result
+
+    - name: Undefine VM and remove storage
+      ansible.builtin.command:
+        cmd: virsh undefine {{ vm_name }} --remove-all-storage
+      ignore_errors: true
+
+    - name: Remove cloud-init ISO
+      ansible.builtin.file:
+        path: "{{ cloud_init_iso }}"
+        state: absent
+
+    - name: Remove cloud-init temp directory
+      ansible.builtin.file:
+        path: "{{ cloud_init_dir }}"
+        state: absent
+
+    - name: Remove VM disk (if undefine didn't catch it)
+      ansible.builtin.command:
+        cmd: virsh vol-delete {{ vm_name }}.qcow2 --pool {{ vm_storage_pool }}
+      ignore_errors: true
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: "VM '{{ vm_name }}' has been destroyed and cleaned up."

@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+dist/
+
+# Environment / secrets
+.env
+.env.local
+.env.production
+
+# Cloud images (large binary files ~660MB)
+images/*.img
+*.qcow2
+*.iso
+
+# Ansible
+*.retry
+
+# Logs
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code
+.claude/
