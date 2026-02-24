@@ -198,7 +198,6 @@
     - name: Delete cloud-init ISO (contains secrets, no longer needed after cloud-init)
       ansible.builtin.command:
         cmd: rm -f {{ cloud_init_iso }}
-      become: true
       changed_when: true
       ignore_errors: true
 
@@ -238,23 +237,21 @@
       changed_when: true
 
     - name: Update OpenClaw config to use local embedding model
-      ansible.builtin.command:
-        cmd: >
-          ssh -o StrictHostKeyChecking=no
-          -o UserKnownHostsFile=/dev/null
-          -i {{ ssh_private_key_file }}
-          openclaw@{{ vm_ip }}
-          python3 -c "
-          import json;
-          f='/home/openclaw/.openclaw/openclaw.json';
-          c=json.load(open(f));
-          c.setdefault('agents',{}).setdefault('defaults',{})['memorySearch']={
-          'provider':'local',
-          'local':{'modelPath':'{{ embedding_model_vm_path }}'}
-          };
-          json.dump(c,open(f,'w'),indent=2);
-          print('embedding config set')
-          "
+      ansible.builtin.shell: |
+        ssh -o StrictHostKeyChecking=no \
+          -o UserKnownHostsFile=/dev/null \
+          -i {{ ssh_private_key_file }} \
+          openclaw@{{ vm_ip }} python3 << 'PYEOF'
+        import json
+        f = '/home/openclaw/.openclaw/openclaw.json'
+        c = json.load(open(f))
+        c.setdefault('agents', {}).setdefault('defaults', {})['memorySearch'] = {
+            'provider': 'local',
+            'local': {'modelPath': '{{ embedding_model_vm_path }}'}
+        }
+        json.dump(c, open(f, 'w'), indent=2)
+        print('embedding config set')
+        PYEOF
       changed_when: true
 
     # --- Report ---
@@ -271,7 +268,6 @@
     - name: Clean up cloud-init ISO (safety net)
       ansible.builtin.command:
         cmd: rm -f {{ cloud_init_iso }}
-      become: true
       changed_when: true
       ignore_errors: true
 
