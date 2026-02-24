@@ -8,7 +8,7 @@ echo "=== OpenClaw Demo: Ubuntu Host Setup ==="
 echo ""
 
 # 1. Install virtualization stack
-echo "[1/9] Installing KVM/libvirt/QEMU packages..."
+echo "[1/11] Installing KVM/libvirt/QEMU packages..."
 sudo apt-get update
 sudo apt-get install -y \
     qemu-kvm \
@@ -23,7 +23,7 @@ sudo apt-get install -y \
     bridge-utils
 
 # 2. Add user to libvirt and kvm groups
-echo "[2/9] Adding $USER to libvirt and kvm groups..."
+echo "[2/11] Adding $USER to libvirt and kvm groups..."
 for grp in libvirt kvm; do
     if ! groups "$USER" | grep -qw "$grp"; then
         sudo usermod -aG "$grp" "$USER"
@@ -34,16 +34,16 @@ for grp in libvirt kvm; do
 done
 
 # 3. Enable and start libvirtd
-echo "[3/9] Enabling and starting libvirtd..."
+echo "[3/11] Enabling and starting libvirtd..."
 sudo systemctl enable --now libvirtd.service
 
 # 4. Start the default NAT network
-echo "[4/9] Starting default NAT network..."
+echo "[4/11] Starting default NAT network..."
 sudo virsh net-autostart default
 sudo virsh net-start default 2>/dev/null || echo "  Default network already active."
 
 # 5. Ensure storage pool exists at /var/lib/libvirt/images
-echo "[5/9] Setting up libvirt storage pool..."
+echo "[5/11] Setting up libvirt storage pool..."
 if virsh -c qemu:///system pool-info images-1 &>/dev/null; then
     echo "  Storage pool 'images-1' already exists."
 else
@@ -55,7 +55,7 @@ else
 fi
 
 # 6. Generate dedicated automation SSH key (no passphrase)
-echo "[6/9] Checking automation SSH key..."
+echo "[6/11] Checking automation SSH key..."
 if [ ! -f "$HOME/.ssh/openclaw_demo" ]; then
     ssh-keygen -t ed25519 -f "$HOME/.ssh/openclaw_demo" -N "" -C "openclaw-demo-automation"
     echo "  Generated new automation key at ~/.ssh/openclaw_demo"
@@ -64,7 +64,7 @@ else
 fi
 
 # 7. Download and install cloud image
-echo "[7/9] Checking cloud image..."
+echo "[7/11] Checking cloud image..."
 CLOUD_IMAGE="/var/lib/libvirt/images/ubuntu-24.04-cloudimg-amd64.img"
 LOCAL_IMAGE="$PROJECT_DIR/images/ubuntu-24.04-cloudimg-amd64.img"
 mkdir -p "$PROJECT_DIR/images"
@@ -89,7 +89,7 @@ else
 fi
 
 # 8. Fix Docker/iptables FORWARD policy blocking VM traffic
-echo "[8/9] Configuring iptables for VM internet access..."
+echo "[8/11] Configuring iptables for VM internet access..."
 OUTIF=$(ip route show default | grep -oP 'dev \K\S+')
 if sudo iptables -L FORWARD -n 2>/dev/null | head -1 | grep -q "DROP"; then
     # Docker sets FORWARD policy to DROP, which blocks all VM outbound traffic.
@@ -112,7 +112,7 @@ else
 fi
 
 # 9. Install Ollama with GPU support
-echo "[9/9] Setting up Ollama..."
+echo "[9/11] Setting up Ollama..."
 if command -v ollama &>/dev/null; then
     echo "  Ollama already installed: $(ollama --version)"
 else
@@ -168,6 +168,42 @@ else
     echo "  Model $MODEL ready."
 fi
 
+# 10. Set up Python virtual environment
+echo "[10/11] Setting up Python virtual environment..."
+sudo apt-get install -y python3-venv python3-pip
+if [ ! -d "$PROJECT_DIR/.venv" ]; then
+    python3 -m venv "$PROJECT_DIR/.venv"
+    echo "  Created virtual environment."
+else
+    echo "  Virtual environment already exists."
+fi
+"$PROJECT_DIR/.venv/bin/pip" install --upgrade pip
+"$PROJECT_DIR/.venv/bin/pip" install -r "$PROJECT_DIR/requirements.txt"
+echo "  Python dependencies installed."
+
+# 11. Create provisioning API systemd service
+echo "[11/11] Setting up provisioning API service..."
+sudo tee /etc/systemd/system/openclaw-provision-api.service > /dev/null << SVCEOF
+[Unit]
+Description=OpenClaw Provisioning API
+After=network.target libvirtd.service ollama.service
+
+[Service]
+Type=simple
+User=$USER
+WorkingDirectory=$PROJECT_DIR
+ExecStart=$PROJECT_DIR/.venv/bin/uvicorn api.main:app --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=$PROJECT_DIR/.env
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+sudo systemctl daemon-reload
+sudo systemctl enable --now openclaw-provision-api.service
+echo "  Provisioning API service started."
+
 # Verify GPU detection
 echo ""
 echo "  GPU status:"
@@ -203,6 +239,13 @@ which mkisofs 2>/dev/null || echo "  WARNING: mkisofs not found! Run: sudo ln -s
 echo ""
 echo "Ollama from bridge IP:"
 curl -s http://192.168.122.1:11434/api/tags 2>/dev/null | head -c 200 || echo "  WARNING: Ollama not reachable from bridge IP (virbr0 may not be up yet)"
+echo ""
+echo "Provisioning API:"
+if curl -s -m 2 http://localhost:8000/health 2>/dev/null | grep -q ok; then
+    echo "  API is running on port 8000."
+else
+    echo "  WARNING: API not yet responding (check: sudo journalctl -u openclaw-provision-api)"
+fi
 echo ""
 echo "=== Host setup complete ==="
 echo ""
