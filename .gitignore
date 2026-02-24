@@ -12,6 +12,8 @@ dist/
 
 # Cloud images (large binary files ~660MB)
 images/*.img
+# Embedding models (GGUF files)
+models/*.gguf
 *.qcow2
 *.iso
 

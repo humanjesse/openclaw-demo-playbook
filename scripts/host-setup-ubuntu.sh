@@ -8,7 +8,7 @@ echo "=== OpenClaw Demo: Ubuntu Host Setup ==="
 echo ""
 
 # 1. Install virtualization stack
-echo "[1/13] Installing KVM/libvirt/QEMU packages..."
+echo "[1/14] Installing KVM/libvirt/QEMU packages..."
 sudo apt-get update
 sudo apt-get install -y \
     qemu-kvm \
@@ -23,7 +23,7 @@ sudo apt-get install -y \
     bridge-utils
 
 # 2. Add user to libvirt and kvm groups
-echo "[2/13] Adding $USER to libvirt and kvm groups..."
+echo "[2/14] Adding $USER to libvirt and kvm groups..."
 for grp in libvirt kvm; do
     if ! groups "$USER" | grep -qw "$grp"; then
         sudo usermod -aG "$grp" "$USER"
@@ -34,16 +34,16 @@ for grp in libvirt kvm; do
 done
 
 # 3. Enable and start libvirtd
-echo "[3/13] Enabling and starting libvirtd..."
+echo "[3/14] Enabling and starting libvirtd..."
 sudo systemctl enable --now libvirtd.service
 
 # 4. Start the default NAT network
-echo "[4/13] Starting default NAT network..."
+echo "[4/14] Starting default NAT network..."
 sudo virsh net-autostart default
 sudo virsh net-start default 2>/dev/null || echo "  Default network already active."
 
 # 5. Ensure storage pool exists at /var/lib/libvirt/images
-echo "[5/13] Setting up libvirt storage pool..."
+echo "[5/14] Setting up libvirt storage pool..."
 if virsh -c qemu:///system pool-info images-1 &>/dev/null; then
     echo "  Storage pool 'images-1' already exists."
 else
@@ -55,7 +55,7 @@ else
 fi
 
 # 6. Generate dedicated automation SSH key (no passphrase)
-echo "[6/13] Checking automation SSH key..."
+echo "[6/14] Checking automation SSH key..."
 if [ ! -f "$HOME/.ssh/openclaw_demo" ]; then
     ssh-keygen -t ed25519 -f "$HOME/.ssh/openclaw_demo" -N "" -C "openclaw-demo-automation"
     echo "  Generated new automation key at ~/.ssh/openclaw_demo"
@@ -64,7 +64,7 @@ else
 fi
 
 # 7. Download and install cloud image
-echo "[7/13] Checking cloud image..."
+echo "[7/14] Checking cloud image..."
 CLOUD_IMAGE="/var/lib/libvirt/images/ubuntu-24.04-cloudimg-amd64.img"
 LOCAL_IMAGE="$PROJECT_DIR/images/ubuntu-24.04-cloudimg-amd64.img"
 mkdir -p "$PROJECT_DIR/images"
@@ -89,7 +89,7 @@ else
 fi
 
 # 8. Fix Docker/iptables FORWARD policy blocking VM traffic + VM isolation
-echo "[8/13] Configuring iptables for VM internet access..."
+echo "[8/14] Configuring iptables for VM internet access..."
 OUTIF=$(ip route show default | grep -oP 'dev \K\S+')
 
 # VM-to-VM isolation FIRST: insert at position 1 so it's always the top rule.
@@ -124,7 +124,7 @@ sudo netfilter-persistent save
 echo "  iptables rules persisted."
 
 # 9. Install Ollama with GPU support
-echo "[9/13] Setting up Ollama..."
+echo "[9/14] Setting up Ollama..."
 if command -v ollama &>/dev/null; then
     echo "  Ollama already installed: $(ollama --version)"
 else
@@ -185,7 +185,7 @@ else
 fi
 
 # 10. Restrict Ollama port to VMs and localhost only
-echo "[10/13] Restricting Ollama port to VM network and localhost..."
+echo "[10/14] Restricting Ollama port to VM network and localhost..."
 # Allow Ollama from localhost (for ollama pull, health checks, CLI)
 if ! sudo iptables -C INPUT -i lo -p tcp --dport 11434 -j ACCEPT 2>/dev/null; then
     sudo iptables -I INPUT -i lo -p tcp --dport 11434 -j ACCEPT
@@ -204,8 +204,21 @@ fi
 sudo netfilter-persistent save
 echo "  Ollama port restricted and persisted."
 
-# 11. Set up Python virtual environment
-echo "[11/13] Setting up Python virtual environment..."
+# 11. Download embedding model for VMs
+echo "[11/14] Downloading embedding model..."
+EMBED_DIR="$PROJECT_DIR/models"
+EMBED_FILE="$EMBED_DIR/embeddinggemma-300m-qat-Q8_0.gguf"
+mkdir -p "$EMBED_DIR"
+if [ -f "$EMBED_FILE" ]; then
+    echo "  Embedding model already downloaded."
+else
+    curl -fSL --progress-bar -o "$EMBED_FILE" \
+        "https://huggingface.co/ggml-org/embeddinggemma-300m-qat-q8_0-GGUF/resolve/main/embeddinggemma-300m-qat-Q8_0.gguf"
+    echo "  Embedding model downloaded ($(du -h "$EMBED_FILE" | cut -f1))."
+fi
+
+# 12. Set up Python virtual environment
+echo "[12/14] Setting up Python virtual environment..."
 sudo apt-get install -y python3-venv python3-pip
 if [ ! -d "$PROJECT_DIR/.venv" ]; then
     python3 -m venv "$PROJECT_DIR/.venv"
@@ -217,8 +230,8 @@ fi
 "$PROJECT_DIR/.venv/bin/pip" install -r "$PROJECT_DIR/requirements.txt"
 echo "  Python dependencies installed."
 
-# 12. Create provisioning API systemd service
-echo "[12/13] Setting up provisioning API service..."
+# 13. Create provisioning API systemd service
+echo "[13/14] Setting up provisioning API service..."
 sudo tee /etc/systemd/system/openclaw-provision-api.service > /dev/null << SVCEOF
 [Unit]
 Description=OpenClaw Provisioning API
@@ -249,8 +262,8 @@ else
     echo "  WARNING: nvidia-smi not found. Ollama will use CPU only."
 fi
 
-# 13. Verify setup
-echo "[13/13] Verifying setup..."
+# 14. Verify setup
+echo "[14/14] Verifying setup..."
 echo ""
 echo "=== Verification ==="
 echo ""

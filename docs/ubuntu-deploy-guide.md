@@ -8,7 +8,6 @@ Step-by-step setup for deploying the OpenClaw provisioning stack on Ubuntu Serve
 - SSH access (via OpenVPN or direct)
 - NVIDIA GPUs with drivers already installed (`nvidia-smi` works)
 - Cloudflare account with API token, account ID, zone ID, and a domain
-- Two SSH sessions to the demo machine (one for the API, one for commands)
 
 Verify basics:
 ```bash
@@ -31,9 +30,10 @@ ollama pull devstral-2:123b
 
 > **Model selection notes:**
 > - `devstral-2:123b` — dense 123B model, ~9-10 tok/s on 8x V100. Good quality, moderate speed.
-> - For faster inference, consider a Mixture of Experts (MoE) model — only a fraction of parameters are active per token so generation is faster.
-> - For MoE models from HuggingFace (not on Ollama registry), see [Importing Custom Models](#importing-custom-models-from-huggingface) below.
+> - `minimax:q5ks` — MoE 397B model, ~51 tok/s on 8x V100. Much faster, requires custom import (see [Importing Custom Models](#importing-custom-models-from-huggingface)).
+> - MoE models only activate a fraction of parameters per token, so generation is faster — but KV cache still scales with full model dimensions.
 > - Make sure the model + KV cache fits in total VRAM. If `ollama ps` shows `CPU/GPU` split, the model is spilling to CPU and will be slow.
+> - Context window (`num_ctx`) directly impacts VRAM. For MiniMax M2.5 on 8x V100: 32k context works (231GB), 200k does NOT (606GB).
 
 ## Step 2: Clone Repo
 
@@ -58,7 +58,7 @@ CF_DOMAIN=zodollama.com
 ANSIBLE_PLAYBOOK_DIR=./ansible/playbooks
 VM_RAM_MB=4096
 VM_VCPUS=4
-OLLAMA_MODEL=devstral-2:123b
+OLLAMA_MODEL=minimax:q5ks
 ```
 
 ```bash
@@ -72,18 +72,20 @@ chmod +x scripts/host-setup-ubuntu.sh
 ./scripts/host-setup-ubuntu.sh
 ```
 
-This installs:
-- KVM/QEMU/libvirt packages
-- Creates `images-1` storage pool
-- Generates SSH key (`~/.ssh/openclaw_demo`)
-- Downloads Ubuntu 24.04 cloud image
-- Configures iptables: VM-to-VM isolation (FORWARD DROP), VM internet access (Docker fix), Ollama port restriction (INPUT: localhost + virbr0 only)
-- Persists iptables rules via `iptables-persistent`
-- Configures Ollama: binds `0.0.0.0:11434`, enables flash attention, sets 1hr keep-alive
-- Enables GPU persistence mode (`nvidia-smi -pm 1`)
-- Pulls the model specified in `.env`
-- Sets up Python venv and installs dependencies
-- Creates and enables the provisioning API systemd service
+This runs 13 steps automatically:
+1. KVM/QEMU/libvirt packages
+2. Adds user to libvirt and kvm groups
+3. Enables libvirtd
+4. Starts default NAT network
+5. Creates `images-1` storage pool
+6. Generates SSH key (`~/.ssh/openclaw_demo`)
+7. Downloads Ubuntu 24.04 cloud image
+8. Configures iptables: VM-to-VM isolation (FORWARD DROP), VM internet access (Docker fix), Ollama port restriction (INPUT: localhost + virbr0 only). Persists rules via `iptables-persistent`
+9. Installs/configures Ollama (binds `0.0.0.0:11434`, flash attention, 1hr keep-alive, GPU persistence mode) and pulls model from `.env`
+10. Restricts Ollama port to localhost and virbr0 only
+11. Downloads embedding model (`embeddinggemma-300m`, ~0.6GB) for VM local embeddings
+12. Creates Python virtual environment and installs dependencies
+13. Creates and starts the provisioning API as a systemd service (`openclaw-provision-api`)
 
 After completion, **log out and SSH back in** for libvirt/kvm group membership to take effect.
 
@@ -97,6 +99,8 @@ ls -la /dev/kvm                    # KVM accessible
 curl http://192.168.122.1:11434/api/tags  # Ollama reachable from bridge IP
 nvidia-smi                         # GPUs visible
 which mkisofs                      # should return /usr/bin/mkisofs (from genisoimage)
+curl -s http://localhost:8000/health      # API running
+sudo systemctl status openclaw-provision-api  # API service active
 ```
 
 If `mkisofs` is missing:
@@ -104,25 +108,11 @@ If `mkisofs` is missing:
 sudo ln -s /usr/bin/genisoimage /usr/bin/mkisofs
 ```
 
-## Step 6: Install Python Dependencies
+## Step 6: Warm Up the Model
 
+Warm up the model so the first user request isn't slow (~35s cold load):
 ```bash
-cd ~/openclaw-provision
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-If `python3 -m venv` fails:
-```bash
-sudo apt install -y python3.12-venv
-```
-
-## Step 7: Warm Up the Model
-
-Before starting the API, warm up the model so the first user request isn't slow (~35s cold load):
-```bash
-curl -s http://localhost:11434/api/generate -d '{"model": "devstral-2:123b", "keep_alive": "1h", "prompt": "hi"}'
+curl -s http://localhost:11434/api/generate -d '{"model": "minimax:q5ks", "keep_alive": "1h", "prompt": "hi"}'
 ```
 
 Verify it's 100% on GPU:
@@ -130,20 +120,10 @@ Verify it's 100% on GPU:
 ollama ps
 ```
 
-Should show `100% GPU`. If it shows `CPU/GPU` split, the model + KV cache is too large — reduce context or use a smaller model.
+Should show `100% GPU`. If it shows `CPU/GPU` split, the model + KV cache is too large — reduce `num_ctx` in the Modelfile or use a smaller model.
 
-## Step 8: Start the API
+## Step 7: Provision a VM
 
-In **Terminal 1**:
-```bash
-cd ~/openclaw-provision
-source .venv/bin/activate
-uvicorn api.main:app --host 0.0.0.0 --port 8000
-```
-
-## Step 9: Provision a VM
-
-In **Terminal 2**:
 ```bash
 curl -s -X POST http://localhost:8000/api/v1/provision \
   -H "Content-Type: application/json" \
@@ -157,51 +137,17 @@ while true; do curl -s http://localhost:8000/api/v1/status/<task_id> | jq; sleep
 
 Wait for `"status": "ready"`. Takes ~5-10 minutes for cloud-init to complete.
 
+The provisioning automatically:
+- Creates a KVM VM with cloud-init
+- Installs Node.js, OpenClaw, and cloudflared in the VM
+- Configures the gateway (bind, token, context window, embeddings)
+- Re-applies config after `openclaw onboard` (which overwrites settings)
+- SCPs the embedding model into the VM
+- Creates a Cloudflare tunnel with DNS
+
 > **Note:** Use a `while` loop instead of `watch` — `watch` fails if the terminal type (e.g. ghostty) isn't recognized on the server.
 
-## Step 10: Fix Gateway Config
-
-The `openclaw onboard` command inside the VM overwrites some gateway settings. After provisioning completes, fix them:
-
-```bash
-ssh -i ~/.ssh/openclaw_demo -o StrictHostKeyChecking=no openclaw@<vm_ip> \
-  'sed -i s/loopback/lan/ /home/openclaw/.openclaw/openclaw.json'
-```
-
-Get the correct token from the poll output (`gateway_url` contains `?token=<TOKEN>`) and replace the onboard-generated token:
-
-```bash
-ssh -i ~/.ssh/openclaw_demo -o StrictHostKeyChecking=no openclaw@<vm_ip> \
-  'sed -i s/<onboard_token>/<correct_token>/ /home/openclaw/.openclaw/openclaw.json'
-```
-
-To find the onboard token:
-```bash
-ssh -i ~/.ssh/openclaw_demo -o StrictHostKeyChecking=no openclaw@<vm_ip> \
-  cat /home/openclaw/.openclaw/openclaw.json | grep token
-```
-
-Fix the context window and max tokens:
-```bash
-ssh -i ~/.ssh/openclaw_demo -o StrictHostKeyChecking=no openclaw@<vm_ip> 'python3 -c "
-import json
-f=\"/home/openclaw/.openclaw/openclaw.json\"
-c=json.load(open(f))
-for m in c[\"models\"][\"providers\"][\"ollama\"][\"models\"]:
-    m[\"contextWindow\"]=262144
-    m[\"maxTokens\"]=16384
-json.dump(c,open(f,\"w\"),indent=2)
-print(\"done\")
-"'
-```
-
-Restart the gateway:
-```bash
-ssh -i ~/.ssh/openclaw_demo -o StrictHostKeyChecking=no openclaw@<vm_ip> \
-  sudo systemctl restart openclaw-gateway
-```
-
-## Step 11: Approve Device Pairing
+## Step 8: Approve Device Pairing
 
 Open the `gateway_url` from the poll output in your browser (the full URL with `?token=...`).
 
@@ -228,6 +174,21 @@ curl -s -X DELETE http://localhost:8000/api/v1/provision/<tenant_name> | jq
 
 # Poll for completion
 curl -s http://localhost:8000/api/v1/status/<task_id> | jq
+```
+
+## Managing the API Service
+
+The provisioning API runs as a systemd service. No manual terminal needed.
+
+```bash
+# Check status
+sudo systemctl status openclaw-provision-api
+
+# View logs
+sudo journalctl -u openclaw-provision-api -f
+
+# Restart
+sudo systemctl restart openclaw-provision-api
 ```
 
 ---
@@ -265,13 +226,51 @@ cd /tmp/llama-cpp && cmake -B build && cmake --build build --target llama-gguf-s
   /tmp/minimax/MiniMax-M2.5-Q5_K_S.gguf
 ```
 
-### 4. Create Ollama model
+### 4. Create Ollama model with chat template + tool support
 
-> **Important:** Some models need a chat template in the Modelfile. Check the model's HuggingFace page for `chat_template.jinja` and convert it to Ollama's Go template format.
+> **Important:** Custom GGUFs often don't include a chat template. You must provide one in the Modelfile, including `.Tools` and `.ToolCalls` for tool support in OpenClaw.
 
 ```bash
 cat > /tmp/Modelfile << 'EOF'
 FROM /tmp/minimax/MiniMax-M2.5-Q5_K_S.gguf
+TEMPLATE """{{- if .System }}]~b]system
+{{ .System }}
+{{- if .Tools }}
+
+You have access to tools. For each function call, return the call within <minimax:tool_call></minimax:tool_call> XML tags:
+<tools>
+{{- range .Tools }}
+{"type": "function", "function": {{ .Function }}}
+{{- end }}
+</tools>
+{{- end }}
+[e~[
+{{ end }}{{- range .Messages }}{{- if eq .Role "user" }}]~b]user
+{{ .Content }}
+[e~[
+{{- else if eq .Role "assistant" }}]~b]ai
+{{- if .Content }}
+{{ .Content }}
+{{- end }}{{- if .ToolCalls }}
+{{- range .ToolCalls }}
+<minimax:tool_call>
+<invoke name="{{ .Function.Name }}">
+{{- range $k, $v := .Function.Arguments }}
+<parameter name="{{ $k }}">{{ $v }}</parameter>
+{{- end }}
+</invoke>
+</minimax:tool_call>
+{{- end }}
+{{- end }}
+[e~[
+{{- else if eq .Role "tool" }}]~b]tool
+{{ .Content }}
+[e~[
+{{- end }}{{- end }}]~b]ai
+"""
+PARAMETER stop [e~[
+PARAMETER num_ctx 32768
+SYSTEM You are a helpful assistant. Your name is MiniMax-M2.5 and is built by MiniMax.
 EOF
 ollama create minimax:q5ks -f /tmp/Modelfile
 ```
@@ -285,6 +284,19 @@ ollama run minimax:q5ks "hello" --verbose
 ```
 OLLAMA_MODEL=minimax:q5ks
 ```
+
+### Context window sizing
+
+The `num_ctx` parameter controls how much VRAM the KV cache uses. For MoE models, KV cache scales with full model dimensions (not active parameters).
+
+| num_ctx | KV Cache (MiniMax M2.5) | Total VRAM | Fits 8x V100 (256GB)? |
+|---------|------------------------|------------|----------------------|
+| 32768   | ~72GB                  | ~231GB     | Yes (100% GPU)       |
+| 40960   | ~90GB                  | ~247GB     | Tight, may work      |
+| 131072  | ~288GB                 | ~445GB     | No                   |
+| 204800  | ~450GB                 | ~606GB     | No                   |
+
+Start with 32768 and experiment upward. Check `ollama ps` after loading — must show `100% GPU`.
 
 ---
 
@@ -315,9 +327,10 @@ nvidia-smi  # GPUs cycle through 100% one at a time — this is normal for multi
 
 - **Group membership not inherited by subprocesses**: Playbooks use `virsh -c qemu:///system` explicitly to avoid relying on libvirt group membership in subprocess chains. You must still log out/in after setup for `virsh` to work from your shell.
 - **Docker iptables FORWARD DROP**: If Docker is installed, it sets iptables FORWARD policy to DROP, blocking VM internet. The host-setup script detects and fixes this automatically, and persists rules with `iptables-persistent`.
-- **OpenClaw onboard overwrites gateway config**: The `openclaw onboard` command changes `gateway.bind` from `lan` to `loopback` and regenerates the auth token. Must be fixed manually after each provision (see Step 10).
+- **OpenClaw onboard overwrites gateway config**: The `openclaw onboard` command changes `gateway.bind` from `lan` to `loopback` and regenerates the auth token. The cloud-init script and playbook re-apply the correct config automatically.
 - **Device pairing per-client**: Each browser/device needs manual approval via `openclaw devices approve <requestId>`.
 - **`watch` command fails on ghostty**: Terminal type `xterm-ghostty` isn't recognized on Ubuntu. Use `while true; do ...; sleep N; done` loops instead.
 - **Passwordless sudo not available**: The setup script uses `sudo` for apt/systemd. Ansible playbooks avoid sudo by using `virsh -c qemu:///system`.
 - **Ollama binds 0.0.0.0**: Required for VM access (Ollama only supports a single bind address). Protected by iptables INPUT rules (step 10). If rules are flushed (e.g. Docker restart), run `sudo netfilter-persistent reload` to restore.
 - **Sharded GGUFs**: Ollama cannot import multi-file GGUFs directly. Merge with `llama-gguf-split --merge` first.
+- **MoE KV cache**: MoE sparsity helps generation speed but NOT KV cache size. Context window scales with full model dimensions. Size `num_ctx` carefully.
