@@ -65,9 +65,10 @@
         mode: "0600"
 
     - name: Remove stale cloud-init ISO (if any)
-      ansible.builtin.file:
-        path: "{{ cloud_init_iso }}"
-        state: absent
+      ansible.builtin.command:
+        cmd: rm -f {{ cloud_init_iso }}
+      changed_when: true
+      ignore_errors: true
 
     - name: Create cloud-init ISO
       ansible.builtin.command:
