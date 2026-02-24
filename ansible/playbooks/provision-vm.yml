@@ -183,6 +183,47 @@
       until: openclaw_ready.rc == 0
       changed_when: false
 
+    # --- Copy embedding model into VM ---
+    - name: Create embedding model directory in VM
+      ansible.builtin.command:
+        cmd: >
+          ssh -o StrictHostKeyChecking=no
+          -o UserKnownHostsFile=/dev/null
+          -i {{ ssh_private_key_file }}
+          openclaw@{{ vm_ip }}
+          mkdir -p /home/openclaw/.openclaw/models
+      changed_when: true
+
+    - name: Copy embedding model to VM
+      ansible.builtin.command:
+        cmd: >
+          scp -o StrictHostKeyChecking=no
+          -o UserKnownHostsFile=/dev/null
+          -i {{ ssh_private_key_file }}
+          {{ embedding_model_path }}
+          openclaw@{{ vm_ip }}:{{ embedding_model_vm_path }}
+      changed_when: true
+
+    - name: Update OpenClaw config to use local embedding model
+      ansible.builtin.command:
+        cmd: >
+          ssh -o StrictHostKeyChecking=no
+          -o UserKnownHostsFile=/dev/null
+          -i {{ ssh_private_key_file }}
+          openclaw@{{ vm_ip }}
+          python3 -c "
+          import json;
+          f='/home/openclaw/.openclaw/openclaw.json';
+          c=json.load(open(f));
+          c.setdefault('agents',{}).setdefault('defaults',{})['memorySearch']={
+          'provider':'local',
+          'local':{'modelPath':'{{ embedding_model_vm_path }}'}
+          };
+          json.dump(c,open(f,'w'),indent=2);
+          print('embedding config set')
+          "
+      changed_when: true
+
     # --- Report ---
     - name: Report success
       ansible.builtin.debug:

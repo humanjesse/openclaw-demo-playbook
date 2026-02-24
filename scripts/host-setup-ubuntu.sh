@@ -168,8 +168,21 @@ else
     echo "  Model $MODEL ready."
 fi
 
-# 10. Set up Python virtual environment
-echo "[10/11] Setting up Python virtual environment..."
+# 10. Download embedding model for VMs
+echo "[10/12] Downloading embedding model..."
+EMBED_DIR="$PROJECT_DIR/models"
+EMBED_FILE="$EMBED_DIR/embeddinggemma-300m-qat-Q8_0.gguf"
+mkdir -p "$EMBED_DIR"
+if [ -f "$EMBED_FILE" ]; then
+    echo "  Embedding model already downloaded."
+else
+    curl -fSL --progress-bar -o "$EMBED_FILE" \
+        "https://huggingface.co/ggml-org/embeddinggemma-300m-qat-q8_0-GGUF/resolve/main/embeddinggemma-300m-qat-Q8_0.gguf"
+    echo "  Embedding model downloaded ($(du -h "$EMBED_FILE" | cut -f1))."
+fi
+
+# 11. Set up Python virtual environment
+echo "[11/12] Setting up Python virtual environment..."
 sudo apt-get install -y python3-venv python3-pip
 if [ ! -d "$PROJECT_DIR/.venv" ]; then
     python3 -m venv "$PROJECT_DIR/.venv"
@@ -181,8 +194,8 @@ fi
 "$PROJECT_DIR/.venv/bin/pip" install -r "$PROJECT_DIR/requirements.txt"
 echo "  Python dependencies installed."
 
-# 11. Create provisioning API systemd service
-echo "[11/11] Setting up provisioning API service..."
+# 12. Create provisioning API systemd service
+echo "[12/12] Setting up provisioning API service..."
 sudo tee /etc/systemd/system/openclaw-provision-api.service > /dev/null << SVCEOF
 [Unit]
 Description=OpenClaw Provisioning API
