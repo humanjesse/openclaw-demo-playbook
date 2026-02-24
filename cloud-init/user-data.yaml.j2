@@ -43,7 +43,7 @@ write_files:
                   "reasoning": false,
                   "input": ["text"],
                   "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-                  "contextWindow": 262144,
+                  "contextWindow": 32768,
                   "maxTokens": 16384
                 }
               ]
@@ -54,6 +54,12 @@ write_files:
           "defaults": {
             "model": {
               "primary": "ollama/{{ ollama_model }}"
+            },
+            "memorySearch": {
+              "provider": "local",
+              "local": {
+                "modelPath": "hf:ggml-org/embeddinggemma-300m-qat-q8_0-GGUF/embeddinggemma-300m-qat-Q8_0.gguf"
+              }
             }
           }
         },
@@ -116,8 +122,14 @@ c['gateway']['bind'] = 'lan'
 c['gateway']['auth'] = {'type': 'token', 'token': '{{ gateway_token }}'}
 for p in c.get('models', {}).get('providers', {}).values():
     for m in p.get('models', []):
-        m['contextWindow'] = 262144
+        m['contextWindow'] = 32768
         m['maxTokens'] = 16384
+c.setdefault('agents', {}).setdefault('defaults', {})['memorySearch'] = {
+    'provider': 'local',
+    'local': {
+        'modelPath': 'hf:ggml-org/embeddinggemma-300m-qat-q8_0-GGUF/embeddinggemma-300m-qat-Q8_0.gguf'
+    }
+}
 json.dump(c, open(f, 'w'), indent=2)
 "
       echo "[$(date)] Gateway config restored."
