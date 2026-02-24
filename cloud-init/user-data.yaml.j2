@@ -158,23 +158,23 @@ write_files:
       # Re-apply our config after onboard (onboard overwrites bind, token, and context settings)
       echo "[$(date)] Re-applying gateway config..."
       sudo -u openclaw python3 -c "
-import json
-f = '/home/openclaw/.openclaw/openclaw.json'
-c = json.load(open(f))
-c['gateway']['bind'] = 'lan'
-c['gateway']['auth'] = {'type': 'token', 'token': '{{ gateway_token }}'}
-for p in c.get('models', {}).get('providers', {}).values():
-    for m in p.get('models', []):
-        m['contextWindow'] = 32768
-        m['maxTokens'] = 16384
-c.setdefault('agents', {}).setdefault('defaults', {})['memorySearch'] = {
-    'provider': 'local',
-    'local': {
-        'modelPath': 'hf:ggml-org/embeddinggemma-300m-qat-q8_0-GGUF/embeddinggemma-300m-qat-Q8_0.gguf'
-    }
-}
-json.dump(c, open(f, 'w'), indent=2)
-"
+      import json
+      f = '/home/openclaw/.openclaw/openclaw.json'
+      c = json.load(open(f))
+      c['gateway']['bind'] = 'lan'
+      c['gateway']['auth'] = {'type': 'token', 'token': '{{ gateway_token }}'}
+      for p in c.get('models', {}).get('providers', {}).values():
+          for m in p.get('models', []):
+              m['contextWindow'] = 32768
+              m['maxTokens'] = 16384
+      c.setdefault('agents', {}).setdefault('defaults', {})['memorySearch'] = {
+          'provider': 'local',
+          'local': {
+              'modelPath': 'hf:ggml-org/embeddinggemma-300m-qat-q8_0-GGUF/embeddinggemma-300m-qat-Q8_0.gguf'
+          }
+      }
+      json.dump(c, open(f, 'w'), indent=2)
+      "
       echo "[$(date)] Gateway config restored."
 
       # Start the gateway as a system-level service (cloud-init has no user session)
