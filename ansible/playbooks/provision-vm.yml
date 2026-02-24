@@ -77,10 +77,10 @@
           {{ cloud_init_dir }}/user-data
           {{ cloud_init_dir }}/meta-data
 
-    - name: Restrict cloud-init ISO permissions (contains secrets)
+    - name: Set cloud-init ISO permissions
       ansible.builtin.file:
         path: "{{ cloud_init_iso }}"
-        mode: "0600"
+        mode: "0644"
 
     # --- Create VM disk via libvirt storage pool ---
     - name: Check if VM disk already exists
