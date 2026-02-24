@@ -196,9 +196,11 @@
       changed_when: eject_result.rc == 0
 
     - name: Delete cloud-init ISO (contains secrets, no longer needed after cloud-init)
-      ansible.builtin.file:
-        path: "{{ cloud_init_iso }}"
-        state: absent
+      ansible.builtin.command:
+        cmd: rm -f {{ cloud_init_iso }}
+      become: true
+      changed_when: true
+      ignore_errors: true
 
     - name: Verify OpenClaw readiness
       ansible.builtin.command:
@@ -267,9 +269,11 @@
 
     # --- Cleanup temp files ---
     - name: Clean up cloud-init ISO (safety net)
-      ansible.builtin.file:
-        path: "{{ cloud_init_iso }}"
-        state: absent
+      ansible.builtin.command:
+        cmd: rm -f {{ cloud_init_iso }}
+      become: true
+      changed_when: true
+      ignore_errors: true
 
     - name: Clean up temporary cloud-init directory
       ansible.builtin.file:
