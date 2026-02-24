@@ -47,6 +47,7 @@ class AnsibleRunnerService:
         ollama_model: str = "qwen3:8b",
         vm_ram_mb: int = 4096,
         vm_vcpus: int = 4,
+        cf_domain: str = "demo.example.com",
     ) -> dict:
         """Run the provision playbook. Returns dict with vm_ip on success."""
         extra_vars = json.dumps(
@@ -57,6 +58,7 @@ class AnsibleRunnerService:
                 "ollama_model": ollama_model,
                 "vm_ram_mb": vm_ram_mb,
                 "vm_vcpus": vm_vcpus,
+                "cf_domain": cf_domain,
             }
         )
 

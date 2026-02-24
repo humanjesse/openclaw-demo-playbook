@@ -21,6 +21,9 @@ ollama_model: "qwen3:8b"
 embedding_model_path: "{{ project_root }}/models/embeddinggemma-300m-qat-Q8_0.gguf"
 embedding_model_vm_path: /home/openclaw/.openclaw/models/embeddinggemma-300m-qat-Q8_0.gguf
 
+# Cloudflare domain (used for gateway controlUi allowedOrigins)
+cf_domain: "demo.example.com"
+
 # SSH key to inject into VMs
 ssh_public_key_file: ~/.ssh/openclaw_demo.pub
 ssh_private_key_file: ~/.ssh/openclaw_demo

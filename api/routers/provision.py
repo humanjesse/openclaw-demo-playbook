@@ -59,6 +59,7 @@ async def _provision_task(task_id: str, request: ProvisionRequest):
             ollama_model=request.ollama_model or settings.ollama_model,
             vm_ram_mb=request.vm_ram_mb or settings.vm_ram_mb,
             vm_vcpus=request.vm_vcpus or settings.vm_vcpus,
+            cf_domain=settings.cf_domain,
         )
 
         task["vm_ip"] = result.get("vm_ip")
