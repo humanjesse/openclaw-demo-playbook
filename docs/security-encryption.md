@@ -21,13 +21,16 @@ Understanding what encryption at rest does and doesn't protect against:
 
 ## Current VM Lifecycle
 
-Today, VMs are ephemeral but not automatically cleaned up:
+VMs are ephemeral. The DELETE endpoint is asynchronous (returns 202) and runs cleanup in the background:
 
 ```
-Provision ──> Running (data decrypted, accessible) ──> Explicit DELETE call ──> Destroyed
-                                                           │
-                                                    What if this doesn't happen?
-                                                    QCOW2 sits on disk indefinitely.
+Provision ──> Running ──> DELETE (async 202) ──> Destroying ──> Destroyed
+                                                     │
+                                               1. Eject cdrom
+                                               2. Delete cloud-init ISO
+                                               3. Wipe disk (if secure_wipe=true)
+                                               4. Remove VM + storage
+                                               5. Delete Cloudflare tunnel + DNS
 ```
 
 **Key gap:** There is no TTL or auto-destroy. If a VM stops (crash, shutdown, host reboot) without an explicit `DELETE /api/v1/provision/{tenant_name}` call, the QCOW2 overlay with all chat logs remains in `/var/lib/libvirt/images/` until someone manually cleans it up.
@@ -80,6 +83,44 @@ If even this metadata is a concern, the host journal can be configured to not pe
 - [ ] Confirm `OLLAMA_DEBUG` is **not** set in `/etc/systemd/system/ollama.service.d/override.conf`
 - [ ] Decide on host journal retention policy for `ollama.service` logs
 - [ ] If the host has multiple tenants' VMs, note that journal metadata could correlate VM IPs to request timing (side-channel, low risk)
+
+## VM Network Hardening
+
+Network security is layered: UFW inside each VM + iptables on the host.
+
+### VM Firewall (UFW)
+
+Each VM runs a UFW firewall configured by cloud-init **before** any packages are installed. Default policy is deny-all ingress and egress.
+
+| Direction | Destination | Port | Purpose |
+|-----------|-------------|------|---------|
+| Egress | 192.168.122.1 | 53/udp, 53/tcp | DNS — pinned to host dnsmasq to prevent DNS exfiltration |
+| Egress | 192.168.122.1 | 11434/tcp | Ollama on host |
+| Egress | any | 443/tcp | cloudflared → Cloudflare edge |
+| Egress | any | 7844/udp | cloudflared QUIC (preferred transport) |
+| Egress | any | 80/tcp | **Setup only** — removed after apt/npm finish |
+| Ingress | 192.168.122.1 | 22/tcp | SSH from host (Ansible) |
+| Loopback | lo | all | cloudflared → OpenClaw gateway on localhost |
+
+**Accepted risk:** HTTPS and QUIC egress allows traffic to any IP, not just Cloudflare. Restricting to Cloudflare's published IP ranges would be brittle (they change frequently). A compromised process could exfiltrate data over port 443.
+
+DNS resolution is also pinned via a systemd-resolved drop-in config (`/etc/systemd/resolved.conf.d/dns-via-host.conf`) as a safety net in case DHCP config changes.
+
+### Host Isolation (iptables)
+
+Configured by `host-setup-ubuntu.sh` with explicit rule positions:
+
+| Chain | Position | Rule | Purpose |
+|-------|----------|------|---------|
+| FORWARD | 1 | DROP virbr0 → virbr0 | VM-to-VM isolation |
+| FORWARD | 2 | ACCEPT virbr0 → internet | VM internet access (Docker FORWARD DROP fix) |
+| FORWARD | 3 | ACCEPT internet → virbr0 (ESTABLISHED) | Return traffic for VM connections |
+| INPUT | - | ACCEPT lo + virbr0 → 11434 | Ollama from localhost and VMs |
+| INPUT | - | DROP all → 11434 | Block Ollama from WiFi/public interfaces |
+
+Rules are persisted via `iptables-persistent` (`netfilter-persistent save`).
+
+**Ollama bind note:** Ollama only supports a single bind address. It binds to `0.0.0.0:11434` because VMs on virbr0 need to reach it. The iptables INPUT rules are the access control layer. If rules are flushed (e.g. Docker restart), run `sudo netfilter-persistent reload` to restore.
 
 ## Recommended Approach
 

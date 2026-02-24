@@ -77,10 +77,13 @@ This installs:
 - Creates `images-1` storage pool
 - Generates SSH key (`~/.ssh/openclaw_demo`)
 - Downloads Ubuntu 24.04 cloud image
-- Configures iptables FORWARD rules for VM NAT (handles Docker's DROP policy)
+- Configures iptables: VM-to-VM isolation (FORWARD DROP), VM internet access (Docker fix), Ollama port restriction (INPUT: localhost + virbr0 only)
+- Persists iptables rules via `iptables-persistent`
 - Configures Ollama: binds `0.0.0.0:11434`, enables flash attention, sets 1hr keep-alive
 - Enables GPU persistence mode (`nvidia-smi -pm 1`)
 - Pulls the model specified in `.env`
+- Sets up Python venv and installs dependencies
+- Creates and enables the provisioning API systemd service
 
 After completion, **log out and SSH back in** for libvirt/kvm group membership to take effect.
 
@@ -218,9 +221,13 @@ After approval, the dashboard should show **"Health OK"** and you can start chat
 
 ## Cleanup
 
-Delete a provisioned VM and its tunnel:
+Delete a provisioned VM and its tunnel (async — returns 202):
 ```bash
+# Start destruction (returns task_id)
 curl -s -X DELETE http://localhost:8000/api/v1/provision/<tenant_name> | jq
+
+# Poll for completion
+curl -s http://localhost:8000/api/v1/status/<task_id> | jq
 ```
 
 ---
@@ -312,4 +319,5 @@ nvidia-smi  # GPUs cycle through 100% one at a time — this is normal for multi
 - **Device pairing per-client**: Each browser/device needs manual approval via `openclaw devices approve <requestId>`.
 - **`watch` command fails on ghostty**: Terminal type `xterm-ghostty` isn't recognized on Ubuntu. Use `while true; do ...; sleep N; done` loops instead.
 - **Passwordless sudo not available**: The setup script uses `sudo` for apt/systemd. Ansible playbooks avoid sudo by using `virsh -c qemu:///system`.
+- **Ollama binds 0.0.0.0**: Required for VM access (Ollama only supports a single bind address). Protected by iptables INPUT rules (step 10). If rules are flushed (e.g. Docker restart), run `sudo netfilter-persistent reload` to restore.
 - **Sharded GGUFs**: Ollama cannot import multi-file GGUFs directly. Merge with `llama-gguf-split --merge` first.

@@ -32,6 +32,8 @@ This stack automates the provisioning of isolated OpenClaw AI assistant instance
                                             | 5. Wait for IP      |
                                             | 6. Wait for SSH     |
                                             | 7. Wait for ready   |
+                                            | 8. Eject cdrom +    |
+                                            |    delete ISO       |
                                             +----------+----------+
                                                        |
                                             +----------v----------+
@@ -79,6 +81,31 @@ VMs reach the host at `192.168.122.1`. Ollama listens on `0.0.0.0:11434`, so it'
 
 libvirt sets up iptables masquerading rules automatically. VMs can reach the internet through the host's WiFi connection for package downloads during cloud-init.
 
+### Network Security (Layered)
+
+**VM-level firewall (UFW)** — configured inside each VM by cloud-init, before any packages are installed:
+
+| Direction | Rule | Purpose |
+|-----------|------|---------|
+| Egress | DNS to 192.168.122.1 only | Prevents DNS exfiltration — pinned to host dnsmasq |
+| Egress | TCP 11434 to 192.168.122.1 | Ollama on host |
+| Egress | TCP 443 to any | cloudflared → Cloudflare edge (accepted risk*) |
+| Egress | UDP 7844 to any | cloudflared QUIC (accepted risk*) |
+| Egress | TCP 80 to any | **Setup only** — removed after apt/npm finish |
+| Ingress | TCP 22 from 192.168.122.1 | SSH from host (Ansible provisioning) |
+| Loopback | all on lo | cloudflared → gateway on localhost |
+
+\* Restricting HTTPS/QUIC to Cloudflare IP ranges would be brittle (they change). Accepted risk: a compromised process could exfiltrate over port 443.
+
+DNS resolution is pinned to the host via both UFW rules and a systemd-resolved drop-in (`/etc/systemd/resolved.conf.d/dns-via-host.conf`).
+
+**Host-level isolation (iptables)** — configured by `host-setup-ubuntu.sh`:
+
+- **FORWARD chain position 1:** DROP virbr0 → virbr0 (VM-to-VM isolation)
+- **FORWARD chain positions 2-3:** ACCEPT virbr0 → internet (Docker FORWARD DROP fix)
+- **INPUT chain:** Ollama port 11434 allowed from localhost + virbr0 only, DROP from all others
+- Rules persisted via `iptables-persistent` / `netfilter-persistent save`
+
 ## Cloud-Init Flow
 
 The cloud-init user-data is a Jinja2 template rendered by Ansible per-VM. It:
@@ -87,11 +114,12 @@ The cloud-init user-data is a Jinja2 template rendered by Ansible per-VM. It:
 2. Installs base packages (curl, git, build-essential, qemu-guest-agent)
 3. Writes the OpenClaw config (`~/.openclaw/openclaw.json`) pre-configured for the host's Ollama
 4. Runs a setup script that:
+   - Enables UFW firewall (deny-all default, with targeted allows for setup)
    - Installs Node.js 22 via NodeSource
    - Installs OpenClaw via npm
    - Runs non-interactive onboarding
-   - Installs cloudflared
-   - Starts the Cloudflare tunnel service
+   - Installs cloudflared and starts the tunnel service
+   - Tightens firewall (removes temporary HTTP egress)
    - Writes a readiness sentinel file
 
 ## Cloudflare Tunnel Architecture
@@ -123,6 +151,11 @@ Three-stage detection ensures the VM is fully operational:
 - Gateway auth tokens are random 32-byte URL-safe strings, generated per-VM
 - SSH keys are injected via cloud-init for host -> VM access
 - Cloudflare tunnel tokens are passed through the cloud-init ISO (not network-exposed)
+- Cloud-init ISO is ejected from the VM cdrom and deleted after cloud-init completes (prevents secrets lingering in QEMU file descriptors)
+- VMs run a UFW firewall with deny-all default; DNS egress pinned to host dnsmasq to prevent exfiltration
+- systemd-resolved inside VMs is pinned to host DNS (192.168.122.1) as a safety net
+- HTTPS/QUIC egress is broad (any IP) — accepted risk since Cloudflare IP ranges are too volatile to pin
+- Host iptables isolate VMs from each other and restrict Ollama access to localhost + virbr0
 - The in-memory task store is demo-only; production would use a persistent database
 - No TLS between VM and host Ollama (internal NAT network, acceptable for demo)
 

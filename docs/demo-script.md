@@ -95,9 +95,10 @@ curl -s -X POST http://localhost:8000/api/v1/provision \
 
 ```bash
 curl -s -X DELETE http://localhost:8000/api/v1/provision/acme-corp | jq .
+# Returns 202 with task_id — destruction runs in the background
 ```
 
-> "Deprovisioning is just as automated. The VM is destroyed, storage is cleaned up, and the Cloudflare tunnel is removed."
+> "Deprovisioning is just as automated and runs in the background. The cloud-init ISO is securely ejected and deleted, the VM disk is wiped, and the Cloudflare tunnel is removed."
 
 ### Step 9: Map to Production (2 min)
 

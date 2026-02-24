@@ -50,19 +50,24 @@
       ansible.builtin.file:
         path: "{{ cloud_init_dir }}"
         state: directory
-        mode: "0755"
+        mode: "0700"
 
     - name: Render cloud-init user-data
       ansible.builtin.template:
         src: "{{ cloud_init_template_dir }}/user-data.yaml.j2"
         dest: "{{ cloud_init_dir }}/user-data"
-        mode: "0644"
+        mode: "0600"
 
     - name: Render cloud-init meta-data
       ansible.builtin.template:
         src: "{{ cloud_init_template_dir }}/meta-data.yaml.j2"
         dest: "{{ cloud_init_dir }}/meta-data"
-        mode: "0644"
+        mode: "0600"
+
+    - name: Remove stale cloud-init ISO (if any)
+      ansible.builtin.file:
+        path: "{{ cloud_init_iso }}"
+        state: absent
 
     - name: Create cloud-init ISO
       ansible.builtin.command:
@@ -71,8 +76,11 @@
           -volid cidata -joliet -rock
           {{ cloud_init_dir }}/user-data
           {{ cloud_init_dir }}/meta-data
-      args:
-        creates: "{{ cloud_init_iso }}"
+
+    - name: Restrict cloud-init ISO permissions (contains secrets)
+      ansible.builtin.file:
+        path: "{{ cloud_init_iso }}"
+        mode: "0600"
 
     # --- Create VM disk via libvirt storage pool ---
     - name: Check if VM disk already exists
@@ -169,6 +177,29 @@
       until: cloud_init_status.rc == 0
       changed_when: false
 
+    - name: Eject cloud-init cdrom from VM (closes QEMU file handle)
+      ansible.builtin.command:
+        argv:
+          - virsh
+          - -c
+          - "{{ libvirt_uri }}"
+          - change-media
+          - "{{ vm_name }}"
+          - --path
+          - "{{ cloud_init_iso }}"
+          - --eject
+      register: eject_result
+      failed_when: >
+        eject_result.rc != 0
+        and 'not found' not in (eject_result.stderr | default(''))
+        and 'Tray is already open' not in (eject_result.stderr | default(''))
+      changed_when: eject_result.rc == 0
+
+    - name: Delete cloud-init ISO (contains secrets, no longer needed after cloud-init)
+      ansible.builtin.file:
+        path: "{{ cloud_init_iso }}"
+        state: absent
+
     - name: Verify OpenClaw readiness
       ansible.builtin.command:
         cmd: >
@@ -194,6 +225,11 @@
           Cloud-init:    {{ cloud_init_status.stdout | default('done') }}
 
     # --- Cleanup temp files ---
+    - name: Clean up cloud-init ISO (safety net)
+      ansible.builtin.file:
+        path: "{{ cloud_init_iso }}"
+        state: absent
+
     - name: Clean up temporary cloud-init directory
       ansible.builtin.file:
         path: "{{ cloud_init_dir }}"

@@ -97,7 +97,7 @@ curl http://localhost:8000/api/v1/status/<task_id>
 
 # When status is "ready", open the tunnel_url in your browser
 
-# Tear down
+# Tear down (returns 202 — poll /status/<task_id> for completion)
 curl -X DELETE http://localhost:8000/api/v1/provision/acme-corp
 ```
 
@@ -108,7 +108,7 @@ curl -X DELETE http://localhost:8000/api/v1/provision/acme-corp
 | `GET` | `/health` | Health check |
 | `POST` | `/api/v1/provision` | Start provisioning a new tenant |
 | `GET` | `/api/v1/status/{task_id}` | Poll provisioning status |
-| `DELETE` | `/api/v1/provision/{tenant_name}` | Destroy a tenant (VM + tunnel) |
+| `DELETE` | `/api/v1/provision/{tenant_name}` | Destroy a tenant (async 202 — poll `/status` for completion) |
 
 Interactive API docs available at `http://localhost:8000/docs` (Swagger UI).
 
@@ -132,9 +132,12 @@ openclaw-provision/
 ├── requirements.txt               # Python dependencies
 ├── docs/
 │   ├── architecture.md            # Detailed architecture docs
+│   ├── security-encryption.md     # Threat model, secure wipe, encrypted snapshots
+│   ├── ubuntu-deploy-guide.md     # Step-by-step Ubuntu deployment
 │   └── demo-script.md             # Step-by-step client demo guide
 ├── scripts/
 │   ├── host-setup.sh              # Install KVM/libvirt on Arch
+│   ├── host-setup-ubuntu.sh       # Install KVM/libvirt on Ubuntu (+ GPU, iptables)
 │   ├── download-cloud-image.sh    # Fetch Ubuntu cloud image
 │   └── cleanup.sh                 # Destroy all demo VMs
 ├── cloud-init/
@@ -146,7 +149,9 @@ openclaw-provision/
 │   ├── vars/defaults.yml          # VM defaults (RAM, CPU, model)
 │   └── playbooks/
 │       ├── provision-vm.yml       # Create + configure VM
-│       └── destroy-vm.yml         # Tear down VM
+│       ├── destroy-vm.yml         # Tear down VM (quick)
+│       ├── secure-wipe-vm.yml     # Tear down VM (zero-fill disk first)
+│       └── save-vm-encrypted.yml  # Snapshot + LUKS encrypt VM
 ├── api/
 │   ├── main.py                    # FastAPI application
 │   ├── config.py                  # Settings from .env

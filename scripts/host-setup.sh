@@ -81,7 +81,7 @@ else
     echo "  Cloud image downloaded and installed."
 fi
 
-# 8. Fix Docker iptables FORWARD policy blocking VM traffic
+# 8. Fix Docker iptables FORWARD policy blocking VM traffic + VM isolation
 echo "[8/8] Configuring iptables for VM internet access..."
 # Docker sets iptables FORWARD policy to DROP, which blocks all VM outbound traffic.
 # Add explicit ACCEPT rules for virbr0 <-> wlan0 forwarding.
@@ -98,8 +98,18 @@ if sudo iptables -L FORWARD -n 2>/dev/null | head -1 | grep -q "DROP"; then
     fi
     echo "  iptables FORWARD rules configured for VM NAT."
 else
-    echo "  iptables FORWARD policy is ACCEPT, no changes needed."
+    echo "  iptables FORWARD policy is ACCEPT, no Docker fix needed."
 fi
+
+# VM-to-VM isolation: drop traffic that enters AND exits virbr0 (VM-to-VM).
+# Does NOT affect VM->host (INPUT chain) or VM->internet (exits via $OUTIF).
+if ! sudo iptables -C FORWARD -i virbr0 -o virbr0 -j DROP 2>/dev/null; then
+    sudo iptables -I FORWARD -i virbr0 -o virbr0 -j DROP
+    echo "  Added FORWARD rule: drop virbr0 -> virbr0 (VM-to-VM isolation)"
+fi
+# NOTE: On Arch, iptables rules are NOT automatically persisted across reboots.
+# To persist, run: sudo iptables-save | sudo tee /etc/iptables/iptables.rules
+# Then: sudo systemctl enable --now iptables.service
 
 echo ""
 echo "=== Verification ==="
