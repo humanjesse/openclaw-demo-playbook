@@ -28,10 +28,16 @@ def _clean_env() -> dict[str, str]:
 class AnsibleRunnerService:
     def __init__(self, playbook_dir: str):
         self.playbook_dir = Path(playbook_dir).resolve()
-        # Resolve ansible-playbook path while venv is active
+        # Resolve ansible-playbook path — check venv bin first (for systemd),
+        # then fall back to PATH lookup
         import shutil
+        import sys
 
-        self._ansible_playbook = shutil.which("ansible-playbook") or "ansible-playbook"
+        venv_bin = Path(sys.executable).parent / "ansible-playbook"
+        if venv_bin.exists():
+            self._ansible_playbook = str(venv_bin)
+        else:
+            self._ansible_playbook = shutil.which("ansible-playbook") or "ansible-playbook"
 
     async def provision_vm(
         self,
@@ -93,11 +99,18 @@ class AnsibleRunnerService:
 
         return {"vm_ip": None, "output": output}
 
-    async def destroy_vm(self, vm_name: str) -> None:
-        """Run the destroy playbook."""
+    async def destroy_vm(self, vm_name: str, secure: bool = True) -> None:
+        """Run the destroy playbook.
+
+        Args:
+            vm_name: Name of the VM to destroy.
+            secure: If True (default), zero-fills disk before deletion via
+                    secure-wipe-vm.yml. If False, fast cleanup via destroy-vm.yml.
+        """
+        playbook = "secure-wipe-vm.yml" if secure else "destroy-vm.yml"
         cmd = [
             self._ansible_playbook,
-            str(self.playbook_dir / "destroy-vm.yml"),
+            str(self.playbook_dir / playbook),
             "--extra-vars",
             json.dumps({"vm_name": vm_name}),
         ]
@@ -115,4 +128,10 @@ class AnsibleRunnerService:
             env=env,
         )
 
-        await process.communicate()
+        stdout, stderr = await process.communicate()
+
+        if process.returncode != 0:
+            raise RuntimeError(
+                f"VM destroy failed (rc={process.returncode}): "
+                f"{stderr.decode()}\n{stdout.decode()}"
+            )
