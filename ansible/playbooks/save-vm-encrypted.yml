@@ -1,0 +1,166 @@
+---
+# Save a VM's disk as a LUKS-encrypted standalone image.
+#
+# Usage:
+#   ansible-playbook ansible/playbooks/save-vm-encrypted.yml \
+#     -e vm_name=acme-corp \
+#     -e encryption_passphrase=<secret> \
+#     [-e archive_dir=/path/to/archive] \
+#     [-e destroy_after_save=true]
+#
+# What this does:
+#   1. Shuts down the VM cleanly (waits for ACPI shutdown)
+#   2. Converts the QCOW2 overlay to a standalone LUKS-encrypted image
+#      (no backing file dependency — fully self-contained)
+#   3. Stores the encrypted image in the archive directory
+#   4. Optionally destroys the original VM after saving
+#
+# To restore/inspect later:
+#   qemu-img info --object secret,id=sec0,data=<passphrase> \
+#     --image-opts driver=qcow2,encrypt.key-secret=sec0,file.filename=<path>
+
+- name: Save VM as encrypted image
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/defaults.yml
+
+  vars:
+    # Required via --extra-vars: vm_name, encryption_passphrase
+    # Optional: archive_dir, destroy_after_save
+    archive_dir: /var/lib/libvirt/images/archive
+    destroy_after_save: false
+    libvirt_uri: "qemu:///system"
+    vm_disk_path: "{{ vm_disk_dir }}/{{ vm_name }}.qcow2"
+    timestamp: "{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
+    encrypted_filename: "{{ vm_name }}-{{ timestamp }}.qcow2"
+    encrypted_path: "{{ archive_dir }}/{{ encrypted_filename }}"
+
+  tasks:
+    - name: Validate required variables
+      ansible.builtin.assert:
+        that:
+          - vm_name is defined
+          - encryption_passphrase is defined
+          - encryption_passphrase | length >= 8
+        fail_msg: "Required: vm_name, encryption_passphrase (min 8 characters)"
+
+    # --- Check VM exists ---
+    - name: Check VM exists
+      ansible.builtin.command:
+        cmd: virsh -c {{ libvirt_uri }} dominfo {{ vm_name }}
+      register: vm_info
+      changed_when: false
+
+    - name: Check VM disk exists
+      ansible.builtin.stat:
+        path: "{{ vm_disk_path }}"
+      register: disk_stat
+
+    - name: Fail if disk not found
+      ansible.builtin.fail:
+        msg: "VM disk not found at {{ vm_disk_path }}"
+      when: not disk_stat.stat.exists
+
+    # --- Shut down VM ---
+    - name: Check if VM is running
+      ansible.builtin.command:
+        cmd: virsh -c {{ libvirt_uri }} domstate {{ vm_name }}
+      register: vm_state
+      changed_when: false
+
+    - name: Shut down VM gracefully (ACPI)
+      ansible.builtin.command:
+        cmd: virsh -c {{ libvirt_uri }} shutdown {{ vm_name }}
+      when: vm_state.stdout | trim == "running"
+
+    - name: Wait for VM to shut down
+      ansible.builtin.command:
+        cmd: virsh -c {{ libvirt_uri }} domstate {{ vm_name }}
+      register: shutdown_check
+      until: shutdown_check.stdout | trim == "shut off"
+      retries: 30
+      delay: 5
+      changed_when: false
+      when: vm_state.stdout | trim == "running"
+
+    # --- Create archive directory ---
+    - name: Create archive directory
+      ansible.builtin.file:
+        path: "{{ archive_dir }}"
+        state: directory
+        mode: "0700"
+
+    # --- Convert to standalone encrypted image ---
+    - name: Convert QCOW2 to standalone LUKS-encrypted image
+      ansible.builtin.command:
+        cmd: >
+          qemu-img convert
+          -f qcow2
+          -O qcow2
+          --object secret,id=sec0,data={{ encryption_passphrase }}
+          -o encrypt.format=luks,encrypt.key-secret=sec0
+          {{ vm_disk_path }}
+          {{ encrypted_path }}
+      no_log: true
+
+    - name: Verify encrypted image was created
+      ansible.builtin.stat:
+        path: "{{ encrypted_path }}"
+      register: encrypted_stat
+
+    - name: Fail if encrypted image not created
+      ansible.builtin.fail:
+        msg: "Encrypted image was not created at {{ encrypted_path }}"
+      when: not encrypted_stat.stat.exists
+
+    - name: Get encrypted image info
+      ansible.builtin.command:
+        cmd: qemu-img info {{ encrypted_path }}
+      register: image_info
+      changed_when: false
+
+    - name: Report save success
+      ansible.builtin.debug:
+        msg: |
+          === VM Image Saved (Encrypted) ===
+          VM Name:          {{ vm_name }}
+          Encrypted Image:  {{ encrypted_path }}
+          Image Size:       {{ encrypted_stat.stat.size | human_readable }}
+          Format:           QCOW2 + LUKS
+          Timestamp:        {{ timestamp }}
+
+          To inspect this image later:
+            qemu-img info \
+              --object secret,id=sec0,data=<passphrase> \
+              --image-opts driver=qcow2,encrypt.key-secret=sec0,file.filename={{ encrypted_path }}
+
+    # --- Optional: destroy original VM after saving ---
+    - name: Destroy original VM after save
+      when: destroy_after_save | bool
+      block:
+        - name: Undefine VM and remove storage
+          ansible.builtin.command:
+            cmd: virsh -c {{ libvirt_uri }} undefine {{ vm_name }} --remove-all-storage
+          ignore_errors: true
+
+        - name: Remove VM disk (fallback)
+          ansible.builtin.command:
+            cmd: virsh -c {{ libvirt_uri }} vol-delete {{ vm_name }}.qcow2 --pool {{ vm_storage_pool }}
+          ignore_errors: true
+
+        - name: Remove cloud-init ISO
+          ansible.builtin.file:
+            path: "/tmp/cloud-init-{{ vm_name }}.iso"
+            state: absent
+
+        - name: Remove cloud-init temp directory
+          ansible.builtin.file:
+            path: "/tmp/cloud-init-{{ vm_name }}"
+            state: absent
+
+        - name: Report destroy complete
+          ansible.builtin.debug:
+            msg: "Original VM '{{ vm_name }}' destroyed after save."
