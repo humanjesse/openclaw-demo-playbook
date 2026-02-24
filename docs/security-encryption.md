@@ -43,6 +43,44 @@ Provision ──> Running (data decrypted, accessible) ──> Explicit DELETE c
 
 All of these live on the QCOW2 overlay disk.
 
+## Host-Side Logging: Ollama
+
+Ollama runs on the host, not inside the VM, so it's important to understand what it logs — wiping a VM doesn't help if the host kept a copy of the conversation.
+
+**Good news:** By default, Ollama does **not** log prompts or responses. Its systemd journal logs (`journalctl -u ollama`) only capture operational metadata: HTTP method, status code, request path (`/api/chat`), response time, and client IP. The actual conversation content is not recorded.
+
+**Warning:** If `OLLAMA_DEBUG=1` is set in the Ollama service environment, full prompts **are** written to the journal. Our `host-setup-ubuntu.sh` does not set this flag. **Do not enable debug mode in production** — it will write every user prompt to the host's systemd journal.
+
+### What the host journal does contain (even without debug mode)
+
+| Data | Example | Sensitive? |
+|------|---------|------------|
+| Client IP | `192.168.122.45` | Low — maps to a VM, not a user directly |
+| Request path | `POST /api/chat` | No |
+| Timing | `200 OK 1.2s` | No |
+| Model used | `qwen3:8b` | No |
+
+If even this metadata is a concern, the host journal can be configured to not persist Ollama logs:
+
+```bash
+# Option A: Make all journal logs volatile (RAM-only, lost on reboot)
+# In /etc/systemd/journald.conf:
+#   Storage=volatile
+
+# Option B: Drop Ollama logs specifically (keep other service logs)
+# In /etc/systemd/journald.conf.d/drop-ollama.conf:
+#   [Match]
+#   _SYSTEMD_UNIT=ollama.service
+#   [Journal]
+#   MaxRetentionSec=1h
+```
+
+### Checklist for production
+
+- [ ] Confirm `OLLAMA_DEBUG` is **not** set in `/etc/systemd/system/ollama.service.d/override.conf`
+- [ ] Decide on host journal retention policy for `ollama.service` logs
+- [ ] If the host has multiple tenants' VMs, note that journal metadata could correlate VM IPs to request timing (side-channel, low risk)
+
 ## Recommended Approach
 
 ### Priority 1: Secure Wipe on Teardown (Playbook: `secure-wipe-vm.yml`)
