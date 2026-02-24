@@ -106,6 +106,22 @@ write_files:
       }
       echo "[$(date)] OpenClaw onboard complete."
 
+      # Re-apply our config after onboard (onboard overwrites bind, token, and context settings)
+      echo "[$(date)] Re-applying gateway config..."
+      sudo -u openclaw python3 -c "
+import json
+f = '/home/openclaw/.openclaw/openclaw.json'
+c = json.load(open(f))
+c['gateway']['bind'] = 'lan'
+c['gateway']['auth'] = {'type': 'token', 'token': '{{ gateway_token }}'}
+for p in c.get('models', {}).get('providers', {}).values():
+    for m in p.get('models', []):
+        m['contextWindow'] = 262144
+        m['maxTokens'] = 16384
+json.dump(c, open(f, 'w'), indent=2)
+"
+      echo "[$(date)] Gateway config restored."
+
       # Start the gateway as a system-level service (cloud-init has no user session)
       echo "[$(date)] Creating OpenClaw gateway systemd service..."
       cat > /etc/systemd/system/openclaw-gateway.service << 'SVCEOF'
