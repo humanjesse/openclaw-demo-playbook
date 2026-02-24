@@ -22,11 +22,12 @@ packages:
   - build-essential
   - jq
   - qemu-guest-agent
+  - ufw
 
 write_files:
   - path: /home/openclaw/.openclaw/openclaw.json
     owner: openclaw:openclaw
-    permissions: "0644"
+    permissions: "0600"
     defer: true
     content: |
       {
@@ -74,6 +75,14 @@ write_files:
         }
       }
 
+  - path: /etc/systemd/resolved.conf.d/dns-via-host.conf
+    permissions: "0644"
+    content: |
+      # Pin DNS to host dnsmasq (libvirt gateway). Safety net in case DHCP config changes.
+      [Resolve]
+      DNS=192.168.122.1
+      Domains=~.
+
   - path: /opt/setup-openclaw.sh
     permissions: "0755"
     content: |
@@ -82,6 +91,40 @@ write_files:
       exec > /var/log/openclaw-setup.log 2>&1
 
       echo "[$(date)] Starting OpenClaw setup..."
+
+      # --- VM Firewall: lock down BEFORE any package installs ---
+      echo "[$(date)] Configuring VM firewall..."
+      ufw default deny incoming
+      ufw default deny outgoing
+
+      # Ingress: SSH from host only (for ansible provisioning)
+      ufw allow in from 192.168.122.1 to any port 22 proto tcp
+
+      # Egress: Ollama on host
+      ufw allow out to 192.168.122.1 port 11434 proto tcp
+
+      # Egress: DNS (host dnsmasq only — pinned to prevent DNS exfiltration)
+      ufw allow out to 192.168.122.1 port 53 proto udp
+      ufw allow out to 192.168.122.1 port 53 proto tcp
+
+      # Egress: HTTP (needed during setup for apt repos; removed at end of script)
+      ufw allow out to any port 80 proto tcp
+
+      # Egress: HTTPS (cloudflared -> Cloudflare edge)
+      # NOTE: Broad rule (any IP). Restricting to Cloudflare IP ranges would be brittle.
+      # Accepted risk: a compromised process could exfiltrate over HTTPS.
+      ufw allow out to any port 443 proto tcp
+
+      # Egress: QUIC (cloudflared prefers UDP 7844 for Cloudflare edge)
+      # NOTE: Same accepted-risk as HTTPS. Port 7844 is Cloudflare-specific, limiting utility to attackers.
+      ufw allow out to any port 7844 proto udp
+
+      # Loopback: internal services (cloudflared -> gateway on localhost)
+      ufw allow in on lo
+      ufw allow out on lo
+
+      ufw --force enable
+      echo "[$(date)] Firewall enabled (setup mode with HTTP egress)."
 
       # Install Node.js 22 via NodeSource
       echo "[$(date)] Installing Node.js 22..."
@@ -177,6 +220,10 @@ json.dump(c, open(f, 'w'), indent=2)
       echo "[$(date)] Starting cloudflared tunnel..."
       cloudflared service install "{{ cf_tunnel_token }}"
       echo "[$(date)] cloudflared tunnel service installed and started."
+
+      # --- Tighten firewall: remove HTTP egress (only needed for apt during setup) ---
+      ufw delete allow out to any port 80 proto tcp
+      echo "[$(date)] Firewall tightened (removed HTTP egress)."
 
       # Signal readiness
       echo "READY" > /var/run/openclaw-ready

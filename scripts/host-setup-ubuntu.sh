@@ -8,7 +8,7 @@ echo "=== OpenClaw Demo: Ubuntu Host Setup ==="
 echo ""
 
 # 1. Install virtualization stack
-echo "[1/11] Installing KVM/libvirt/QEMU packages..."
+echo "[1/14] Installing KVM/libvirt/QEMU packages..."
 sudo apt-get update
 sudo apt-get install -y \
     qemu-kvm \
@@ -23,7 +23,7 @@ sudo apt-get install -y \
     bridge-utils
 
 # 2. Add user to libvirt and kvm groups
-echo "[2/11] Adding $USER to libvirt and kvm groups..."
+echo "[2/14] Adding $USER to libvirt and kvm groups..."
 for grp in libvirt kvm; do
     if ! groups "$USER" | grep -qw "$grp"; then
         sudo usermod -aG "$grp" "$USER"
@@ -34,16 +34,16 @@ for grp in libvirt kvm; do
 done
 
 # 3. Enable and start libvirtd
-echo "[3/11] Enabling and starting libvirtd..."
+echo "[3/14] Enabling and starting libvirtd..."
 sudo systemctl enable --now libvirtd.service
 
 # 4. Start the default NAT network
-echo "[4/11] Starting default NAT network..."
+echo "[4/14] Starting default NAT network..."
 sudo virsh net-autostart default
 sudo virsh net-start default 2>/dev/null || echo "  Default network already active."
 
 # 5. Ensure storage pool exists at /var/lib/libvirt/images
-echo "[5/11] Setting up libvirt storage pool..."
+echo "[5/14] Setting up libvirt storage pool..."
 if virsh -c qemu:///system pool-info images-1 &>/dev/null; then
     echo "  Storage pool 'images-1' already exists."
 else
@@ -55,7 +55,7 @@ else
 fi
 
 # 6. Generate dedicated automation SSH key (no passphrase)
-echo "[6/11] Checking automation SSH key..."
+echo "[6/14] Checking automation SSH key..."
 if [ ! -f "$HOME/.ssh/openclaw_demo" ]; then
     ssh-keygen -t ed25519 -f "$HOME/.ssh/openclaw_demo" -N "" -C "openclaw-demo-automation"
     echo "  Generated new automation key at ~/.ssh/openclaw_demo"
@@ -64,7 +64,7 @@ else
 fi
 
 # 7. Download and install cloud image
-echo "[7/11] Checking cloud image..."
+echo "[7/14] Checking cloud image..."
 CLOUD_IMAGE="/var/lib/libvirt/images/ubuntu-24.04-cloudimg-amd64.img"
 LOCAL_IMAGE="$PROJECT_DIR/images/ubuntu-24.04-cloudimg-amd64.img"
 mkdir -p "$PROJECT_DIR/images"
@@ -88,31 +88,43 @@ else
     echo "  Cloud image downloaded and installed."
 fi
 
-# 8. Fix Docker/iptables FORWARD policy blocking VM traffic
-echo "[8/11] Configuring iptables for VM internet access..."
+# 8. Fix Docker/iptables FORWARD policy blocking VM traffic + VM isolation
+echo "[8/14] Configuring iptables for VM internet access..."
 OUTIF=$(ip route show default | grep -oP 'dev \K\S+')
-if sudo iptables -L FORWARD -n 2>/dev/null | head -1 | grep -q "DROP"; then
-    # Docker sets FORWARD policy to DROP, which blocks all VM outbound traffic.
-    if ! sudo iptables -C FORWARD -i virbr0 -o "$OUTIF" -j ACCEPT 2>/dev/null; then
-        sudo iptables -I FORWARD -i virbr0 -o "$OUTIF" -j ACCEPT
-        echo "  Added FORWARD rule: virbr0 -> $OUTIF"
-    fi
-    if ! sudo iptables -C FORWARD -i "$OUTIF" -o virbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null; then
-        sudo iptables -I FORWARD -i "$OUTIF" -o virbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
-        echo "  Added FORWARD rule: $OUTIF -> virbr0 (established)"
-    fi
-    # Persist iptables rules across reboots
-    echo iptables-persistent iptables-persistent/autosave_v4 boolean true | sudo debconf-set-selections
-    echo iptables-persistent iptables-persistent/autosave_v6 boolean true | sudo debconf-set-selections
-    sudo apt-get install -y iptables-persistent
-    sudo netfilter-persistent save
-    echo "  iptables FORWARD rules configured and persisted."
-else
-    echo "  iptables FORWARD policy is ACCEPT, no changes needed."
+
+# VM-to-VM isolation FIRST: insert at position 1 so it's always the top rule.
+# Drops traffic that enters AND exits virbr0 (VM-to-VM).
+# Does NOT affect VM->host (INPUT chain) or VM->internet (exits via $OUTIF).
+if ! sudo iptables -C FORWARD -i virbr0 -o virbr0 -j DROP 2>/dev/null; then
+    sudo iptables -I FORWARD 1 -i virbr0 -o virbr0 -j DROP
+    echo "  Added FORWARD rule at pos 1: drop virbr0 -> virbr0 (VM-to-VM isolation)"
 fi
 
+# Docker fix: Docker sets FORWARD policy to DROP, blocking all VM outbound traffic.
+# Insert at positions 2-3 (after the VM isolation DROP rule above).
+if sudo iptables -L FORWARD -n 2>/dev/null | head -1 | grep -q "DROP"; then
+    if ! sudo iptables -C FORWARD -i virbr0 -o "$OUTIF" -j ACCEPT 2>/dev/null; then
+        sudo iptables -I FORWARD 2 -i virbr0 -o "$OUTIF" -j ACCEPT
+        echo "  Added FORWARD rule at pos 2: virbr0 -> $OUTIF"
+    fi
+    if ! sudo iptables -C FORWARD -i "$OUTIF" -o virbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null; then
+        sudo iptables -I FORWARD 3 -i "$OUTIF" -o virbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+        echo "  Added FORWARD rule at pos 3: $OUTIF -> virbr0 (established)"
+    fi
+    echo "  iptables FORWARD rules configured."
+else
+    echo "  iptables FORWARD policy is ACCEPT, no Docker fix needed."
+fi
+
+# Persist iptables rules across reboots
+echo iptables-persistent iptables-persistent/autosave_v4 boolean true | sudo debconf-set-selections
+echo iptables-persistent iptables-persistent/autosave_v6 boolean true | sudo debconf-set-selections
+sudo apt-get install -y iptables-persistent
+sudo netfilter-persistent save
+echo "  iptables rules persisted."
+
 # 9. Install Ollama with GPU support
-echo "[9/11] Setting up Ollama..."
+echo "[9/14] Setting up Ollama..."
 if command -v ollama &>/dev/null; then
     echo "  Ollama already installed: $(ollama --version)"
 else
@@ -128,6 +140,10 @@ if nvidia-smi &>/dev/null; then
 fi
 
 # Configure Ollama: bind all interfaces, flash attention, keep model in VRAM
+# NOTE: Ollama only supports a single OLLAMA_HOST bind address. Binding to 0.0.0.0 is
+# required for VMs on virbr0 (192.168.122.0/24) to reach it. Step 10 restricts access to
+# localhost and virbr0 via iptables. If rules are flushed (e.g. Docker restart), Ollama
+# is exposed — run `netfilter-persistent reload` to restore.
 echo "  Configuring Ollama..."
 sudo mkdir -p /etc/systemd/system/ollama.service.d
 sudo tee /etc/systemd/system/ollama.service.d/override.conf > /dev/null << 'EOF'
@@ -168,8 +184,28 @@ else
     echo "  Model $MODEL ready."
 fi
 
-# 10. Download embedding model for VMs
-echo "[10/12] Downloading embedding model..."
+# 10. Restrict Ollama port to VMs and localhost only
+echo "[10/14] Restricting Ollama port to VM network and localhost..."
+# Allow Ollama from localhost (for ollama pull, health checks, CLI)
+if ! sudo iptables -C INPUT -i lo -p tcp --dport 11434 -j ACCEPT 2>/dev/null; then
+    sudo iptables -I INPUT -i lo -p tcp --dport 11434 -j ACCEPT
+    echo "  Added INPUT rule: allow 11434 from lo"
+fi
+# Allow Ollama from VM bridge network
+if ! sudo iptables -C INPUT -i virbr0 -p tcp --dport 11434 -j ACCEPT 2>/dev/null; then
+    sudo iptables -I INPUT -i virbr0 -p tcp --dport 11434 -j ACCEPT
+    echo "  Added INPUT rule: allow 11434 from virbr0"
+fi
+# Drop Ollama from all other interfaces (WiFi, public, etc.)
+if ! sudo iptables -C INPUT -p tcp --dport 11434 -j DROP 2>/dev/null; then
+    sudo iptables -A INPUT -p tcp --dport 11434 -j DROP
+    echo "  Added INPUT rule: drop 11434 from all other sources"
+fi
+sudo netfilter-persistent save
+echo "  Ollama port restricted and persisted."
+
+# 11. Download embedding model for VMs
+echo "[11/14] Downloading embedding model..."
 EMBED_DIR="$PROJECT_DIR/models"
 EMBED_FILE="$EMBED_DIR/embeddinggemma-300m-qat-Q8_0.gguf"
 mkdir -p "$EMBED_DIR"
@@ -181,8 +217,8 @@ else
     echo "  Embedding model downloaded ($(du -h "$EMBED_FILE" | cut -f1))."
 fi
 
-# 11. Set up Python virtual environment
-echo "[11/12] Setting up Python virtual environment..."
+# 12. Set up Python virtual environment
+echo "[12/14] Setting up Python virtual environment..."
 sudo apt-get install -y python3-venv python3-pip
 if [ ! -d "$PROJECT_DIR/.venv" ]; then
     python3 -m venv "$PROJECT_DIR/.venv"
@@ -194,8 +230,8 @@ fi
 "$PROJECT_DIR/.venv/bin/pip" install -r "$PROJECT_DIR/requirements.txt"
 echo "  Python dependencies installed."
 
-# 12. Create provisioning API systemd service
-echo "[12/12] Setting up provisioning API service..."
+# 13. Create provisioning API systemd service
+echo "[13/14] Setting up provisioning API service..."
 sudo tee /etc/systemd/system/openclaw-provision-api.service > /dev/null << SVCEOF
 [Unit]
 Description=OpenClaw Provisioning API
@@ -226,8 +262,16 @@ else
     echo "  WARNING: nvidia-smi not found. Ollama will use CPU only."
 fi
 
+# 14. Verify setup
+echo "[14/14] Verifying setup..."
 echo ""
 echo "=== Verification ==="
+echo ""
+echo "iptables (security rules):"
+echo "  FORWARD chain (VM isolation):"
+sudo iptables -L FORWARD -n 2>/dev/null | grep -E "virbr0.*virbr0.*DROP" && echo "    VM-to-VM isolation: OK" || echo "    WARNING: VM-to-VM isolation rule not found"
+echo "  INPUT chain (Ollama restriction):"
+sudo iptables -L INPUT -n 2>/dev/null | grep -E "11434.*DROP" && echo "    Ollama port restriction: OK" || echo "    WARNING: Ollama port restriction rule not found"
 echo ""
 echo "Networks:"
 virsh -c qemu:///system net-list --all 2>/dev/null || virsh net-list --all

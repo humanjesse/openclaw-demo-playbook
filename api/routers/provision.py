@@ -1,8 +1,10 @@
+import logging
 import secrets
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Path
+from starlette.responses import JSONResponse
 
 from api.config import settings
 from api.models import (
@@ -14,7 +16,11 @@ from api.models import (
 from api.services.ansible_runner import AnsibleRunnerService
 from api.services.cloudflare import CloudflareService
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(tags=["provision"])
+
+TENANT_NAME_PATTERN = r"^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$"
 
 # In-memory task store (demo only — production would use a database)
 tasks: dict[str, dict] = {}
@@ -67,7 +73,7 @@ async def _provision_task(task_id: str, request: ProvisionRequest):
         try:
             if "tunnel_id" in task:
                 await cf_service.delete_tunnel(task["tunnel_id"], request.tenant_name)
-            await ansible_service.destroy_vm(request.tenant_name)
+            await ansible_service.destroy_vm(request.tenant_name, secure=False)
         except Exception:
             pass
 
@@ -130,9 +136,33 @@ async def get_status(task_id: str):
     )
 
 
+async def _deprovision_task(task: dict, tenant_name: str, secure_wipe: bool):
+    """Background task: full deprovisioning flow."""
+    try:
+        if "tunnel_id" in task:
+            await cf_service.delete_tunnel(task["tunnel_id"], tenant_name)
+        await ansible_service.destroy_vm(tenant_name, secure=secure_wipe)
+        task["status"] = ProvisionStatus.DESTROYED
+        task["message"] = "Tenant destroyed."
+    except Exception as e:
+        logger.error("Deprovision failed for %s: %s", tenant_name, e)
+        task["status"] = ProvisionStatus.FAILED
+        task["error"] = "VM destruction failed. Check server logs."
+
+
 @router.delete("/provision/{tenant_name}")
-async def deprovision(tenant_name: str):
-    """Tear down a provisioned tenant (VM + tunnel)."""
+async def deprovision(
+    background_tasks: BackgroundTasks,
+    tenant_name: str = Path(pattern=TENANT_NAME_PATTERN),
+    secure_wipe: bool = True,
+):
+    """Tear down a provisioned tenant (VM + tunnel).
+
+    Runs asynchronously — poll /status/{task_id} for completion.
+
+    Args:
+        secure_wipe: If True (default), zero-fills VM disk before deletion.
+    """
     task = None
     for t in tasks.values():
         if t["tenant_name"] == tenant_name:
@@ -141,11 +171,14 @@ async def deprovision(tenant_name: str):
     if not task:
         raise HTTPException(status_code=404, detail="Tenant not found")
 
-    try:
-        if "tunnel_id" in task:
-            await cf_service.delete_tunnel(task["tunnel_id"], tenant_name)
-        await ansible_service.destroy_vm(tenant_name)
-        task["status"] = ProvisionStatus.DESTROYED
-        return {"message": f"Tenant '{tenant_name}' destroyed."}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    task["status"] = ProvisionStatus.DESTROYING
+    task["message"] = "Destruction started."
+    background_tasks.add_task(_deprovision_task, task, tenant_name, secure_wipe)
+
+    return JSONResponse(
+        status_code=202,
+        content={
+            "task_id": task["task_id"],
+            "message": f"Destruction of '{tenant_name}' started. Poll /status/{task['task_id']} for updates.",
+        },
+    )

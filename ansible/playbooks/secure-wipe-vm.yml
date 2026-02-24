@@ -1,0 +1,87 @@
+---
+# Securely destroy a VM by wiping its disk before deletion.
+#
+# Usage:
+#   ansible-playbook ansible/playbooks/secure-wipe-vm.yml \
+#     -e vm_name=acme-corp
+#
+# Differences from destroy-vm.yml:
+#   - Wipes the QCOW2 disk (writes zeros) BEFORE deleting it
+#   - Prevents forensic recovery of chat logs and session data
+#   - Slower than destroy-vm.yml (wipe takes time proportional to disk size)
+#
+# Use destroy-vm.yml for fast cleanup of non-sensitive VMs.
+# Use this playbook for production teardowns where data sensitivity matters.
+
+- name: Secure wipe and destroy OpenClaw VM
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/defaults.yml
+
+  vars:
+    # Expected via --extra-vars: vm_name
+    cloud_init_iso: "/tmp/cloud-init-{{ vm_name }}.iso"
+    cloud_init_dir: "/tmp/cloud-init-{{ vm_name }}"
+    libvirt_uri: "qemu:///system"
+
+  tasks:
+    - name: Validate required variables
+      ansible.builtin.assert:
+        that:
+          - vm_name is defined
+        fail_msg: "Required variable: vm_name"
+
+    # --- Stop the VM ---
+    - name: Destroy VM (force off)
+      ansible.builtin.command:
+        cmd: virsh -c {{ libvirt_uri }} destroy {{ vm_name }}
+      ignore_errors: true
+      register: destroy_result
+
+    # --- Wipe the disk before deletion ---
+    - name: Check if VM disk exists in pool
+      ansible.builtin.command:
+        cmd: virsh -c {{ libvirt_uri }} vol-info {{ vm_name }}.qcow2 --pool {{ vm_storage_pool }}
+      register: vol_check
+      ignore_errors: true
+      changed_when: false
+
+    - name: Wipe VM disk (zero-fill)
+      ansible.builtin.command:
+        cmd: virsh -c {{ libvirt_uri }} vol-wipe {{ vm_name }}.qcow2 --pool {{ vm_storage_pool }} --algorithm zero
+      when: vol_check.rc == 0
+
+    - name: Delete VM disk from pool
+      ansible.builtin.command:
+        cmd: virsh -c {{ libvirt_uri }} vol-delete {{ vm_name }}.qcow2 --pool {{ vm_storage_pool }}
+      when: vol_check.rc == 0
+      ignore_errors: true
+
+    # --- Undefine VM ---
+    - name: Undefine VM
+      ansible.builtin.command:
+        cmd: virsh -c {{ libvirt_uri }} undefine {{ vm_name }}
+      ignore_errors: true
+
+    # --- Clean up cloud-init artifacts ---
+    - name: Remove cloud-init ISO
+      ansible.builtin.file:
+        path: "{{ cloud_init_iso }}"
+        state: absent
+
+    - name: Remove cloud-init temp directory
+      ansible.builtin.file:
+        path: "{{ cloud_init_dir }}"
+        state: absent
+
+    # --- Report ---
+    - name: Report
+      ansible.builtin.debug:
+        msg: |
+          === VM '{{ vm_name }}' Securely Destroyed ===
+          Disk wiped:  {{ 'yes' if vol_check.rc == 0 else 'no (disk not found in pool)' }}
+          VM undefined: yes
+          Cloud-init artifacts: removed

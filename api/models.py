@@ -9,6 +9,7 @@ class ProvisionStatus(str, Enum):
     CREATING_TUNNEL = "creating_tunnel"
     PROVISIONING_VM = "provisioning_vm"
     READY = "ready"
+    DESTROYING = "destroying"
     DESTROYED = "destroyed"
     FAILED = "failed"
 
