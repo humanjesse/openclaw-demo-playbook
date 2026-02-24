@@ -334,3 +334,4 @@ nvidia-smi  # GPUs cycle through 100% one at a time — this is normal for multi
 - **Ollama binds 0.0.0.0**: Required for VM access (Ollama only supports a single bind address). Protected by iptables INPUT rules (step 10). If rules are flushed (e.g. Docker restart), run `sudo netfilter-persistent reload` to restore.
 - **Sharded GGUFs**: Ollama cannot import multi-file GGUFs directly. Merge with `llama-gguf-split --merge` first.
 - **MoE KV cache**: MoE sparsity helps generation speed but NOT KV cache size. Context window scales with full model dimensions. Size `num_ctx` carefully.
+- **Gateway controlUi allowedOrigins**: When `gateway.bind` is `lan`, OpenClaw requires `gateway.controlUi.allowedOrigins` to be set (CSRF protection). The provisioning automatically sets this to `https://<tenant_name>.<CF_DOMAIN>`. If you see the error "non-loopback Control UI requires gateway.controlUi.allowedOrigins", ensure `CF_DOMAIN` is set correctly in `.env`.
