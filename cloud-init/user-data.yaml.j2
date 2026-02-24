@@ -69,7 +69,6 @@ write_files:
           "bind": "lan",
           "mode": "local",
           "auth": {
-            "type": "token",
             "token": "{{ gateway_token }}"
           }
         }
@@ -162,7 +161,7 @@ write_files:
       f = '/home/openclaw/.openclaw/openclaw.json'
       c = json.load(open(f))
       c['gateway']['bind'] = 'lan'
-      c['gateway']['auth'] = {'type': 'token', 'token': '{{ gateway_token }}'}
+      c['gateway']['auth'] = {'token': '{{ gateway_token }}'}
       for p in c.get('models', {}).get('providers', {}).values():
           for m in p.get('models', []):
               m['contextWindow'] = 32768
