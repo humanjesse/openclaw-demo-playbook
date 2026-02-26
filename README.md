@@ -1,5 +1,7 @@
 # OpenClaw Automated VM Provisioning Stack
 
+UNFINISHED
+
 Automated provisioning of isolated OpenClaw AI assistant instances inside KVM virtual machines, with Cloudflare tunnel ingress. Built to demo a customer onboarding flow for bare-metal server fleets managed via Ansible.
 
 ## Architecture
